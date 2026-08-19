@@ -1,0 +1,258 @@
+## 采样是 RL 的墙钟时间大头
+
+一步 GRPO 长这样：
+
+```
+采样 8 个 prompt × 8 条回答 × 平均 400 token  →  25600 token
+                    ↓
+              算 reward
+                    ↓
+        一次前向 + 一次反向
+                    ↓
+          权重同步回推理引擎
+```
+
+在单卡 colocate 下，**采样通常占掉 60% 到 80% 的时间**。也就是说，你优化训练侧的收益远不如优化采样侧。
+
+所以在写任何训练代码之前，先把推理引擎跑起来，量出这张卡的真实吞吐。这个数字后面到处都要用 —— L4 的时间账计算器第一个输入项就是它。
+
+<Callout type="trap" title="不要用 transformers 的 generate 做 rollout">
+`model.generate()` 能用，但没有 PagedAttention、没有连续批处理、没有 CUDA graph。同样的卡，吞吐差一个数量级。
+
+RL 里采样占大头，这一个数量级会直接变成「一次实验 40 分钟」和「一次实验 6 小时」的差别。**从第一天就用 vLLM。**
+</Callout>
+
+## 拿模型
+
+```bash
+# 国内建议先设镜像
+export HF_ENDPOINT=https://hf-mirror.com
+
+pip install -U "huggingface_hub[cli]"
+hf download Qwen/Qwen3-0.6B --local-dir ./models/Qwen3-0.6B
+```
+
+0.6B 大约 1.2 GB，很快。顺手把数据集也拿了，下一节要用：
+
+```bash
+hf download --repo-type dataset openai/gsm8k --local-dir ./data/gsm8k
+```
+
+## 两种用法
+
+### offline：进程内直接调
+
+写实验脚本时最方便，手写训练循环也用这个。
+
+```python
+from vllm import LLM, SamplingParams
+
+llm = LLM(
+    model="./models/Qwen3-0.6B",
+    gpu_memory_utilization=0.45,   # 只给 vLLM 这么多，其余留给训练
+    max_model_len=2048,
+    dtype="bfloat16",
+)
+
+params = SamplingParams(n=8, temperature=1.0, top_p=1.0, max_tokens=512)
+outputs = llm.generate(["3 + 4 * 2 = ?"], params)
+
+for cand in outputs[0].outputs:
+    print("---", cand.text.strip()[:120])
+```
+
+### server：起 HTTP 服务
+
+多卡时训练和推理分在不同卡上会用到。单卡上一般不用，但调试时方便：
+
+```bash
+vllm serve ./models/Qwen3-0.6B \
+  --gpu-memory-utilization 0.9 \
+  --max-model-len 2048 \
+  --port 8000
+```
+
+## 压一次吞吐
+
+这是这节课真正的产出物。**固定条件、记录数字。**
+
+```python
+# bench/bench_rollout.py
+import time
+from vllm import LLM, SamplingParams
+
+PROMPTS = [f"计算并只输出答案：{i} * 37 + 12 = ?" for i in range(64)]
+
+llm = LLM(model="./models/Qwen3-0.6B", gpu_memory_utilization=0.45, max_model_len=2048)
+params = SamplingParams(n=8, temperature=1.0, max_tokens=512)
+
+t0 = time.perf_counter()
+outputs = llm.generate(PROMPTS, params)
+elapsed = time.perf_counter() - t0
+
+gen_tokens = sum(len(c.token_ids) for o in outputs for c in o.outputs)
+seqs = sum(len(o.outputs) for o in outputs)
+
+print(f"序列数      : {seqs}")
+print(f"生成 token  : {gen_tokens}")
+print(f"耗时        : {elapsed:.1f} s")
+print(f"吞吐        : {gen_tokens / elapsed:.0f} tok/s")
+print(f"平均长度    : {gen_tokens / seqs:.0f} token")
+```
+
+跑完把这四个数记下来：
+
+```
+吞吐 ______ tok/s      平均长度 ______ token
+显存占用 ______ GiB     引擎启动耗时 ______ s
+```
+
+<Callout type="gpu" title="为什么这里不给你一个「5090 的标准值」">
+因为没有这种东西。同一张 5090 上，同一个 0.6B 模型，改一下 `max_model_len`、并发数或者关掉 CUDA graph，吞吐能差三倍。
+
+给你一个数字只会让你产生虚假的参照。**测你自己的。** 后面所有时间估算都基于你这个数。
+</Callout>
+
+## 三个真正影响结果的旋钮
+
+### gpu_memory_utilization
+
+vLLM 会**预先吃掉**这个比例的显存，剩下的留给 KV cache。默认 0.9 —— 单卡 colocate 时这会把训练侧饿死。
+
+```
+纯推理测吞吐   → 0.85 ~ 0.9
+训推同卡       → 0.3 ~ 0.5，从 0.3 开始试
+```
+
+### max_model_len
+
+决定单条序列的上限，也决定 KV cache 块的规划。**设得越大，能容纳的并发越少。**
+
+不要图省事写 32768。按你实际需要设：数学题任务 2048 就够，长思维链任务再往上加。
+
+### CUDA graph
+
+vLLM 默认会捕获 CUDA graph，把逐层 kernel 启动的开销省掉。启动日志里会看到：
+
+```
+INFO  Capturing CUDA graphs: 100%|██████████| 35/35
+```
+
+很多 5090 的教程会让你加 `--enforce-eager` 来绕过启动阶段的报错。**能不加就不加** —— 关掉 CUDA graph 会显著掉吞吐。如果不加就报错，优先升级 vLLM 版本。
+
+<Terminal
+  id="bench-rollout"
+  host="rl@forge"
+  cwd="~/rlforge"
+  intro={"吞吐测量演练。先测纯推理的上限，再测 colocate 下的实际值，比较两者的差距。\ngoals 看目标，hint 要提示。"}
+  commands={[
+    {
+      cmd: 'python bench/bench_rollout.py',
+      goal: '测出纯推理场景的吞吐上限',
+      hint: '先在 gpu_memory_utilization 高的情况下测一次，作为上限参照',
+      output: `INFO  Using Flash Attention backend
+INFO  # GPU blocks: 27184, # CPU blocks: 4681
+INFO  Capturing CUDA graphs: 100%|██████████| 35/35
+INFO  init engine took 22.8 s
+Processed prompts: 100%|██████████| 64/64 [00:41<00:00]
+
+序列数      : 512
+生成 token  : 158720
+耗时        : 41.2 s
+吞吐        : 3852 tok/s
+平均长度    : 310 token
+
+读法：3852 tok/s 是这张卡在 0.45 利用率、512 并发下的实际值。
+平均长度 310 远小于 max_tokens=512 —— 说明多数回答自己停下来了，健康。`,
+    },
+    {
+      cmd: 'nvidia-smi --query-gpu=memory.used,utilization.gpu --format=csv',
+      goal: '确认显存占用与 GPU 利用率',
+      hint: '测吞吐的同时要知道它吃了多少显存，否则没法安排 colocate',
+      output: `memory.used [MiB], utilization.gpu [%]
+14832 MiB, 97 %
+
+读法：14.5 GiB，符合 gpu_memory_utilization=0.45 的设定。
+利用率 97% 说明采样阶段 GPU 是打满的 —— 想再快只能加并发或换更短的输出。`,
+    },
+    {
+      cmd: 'python bench/bench_rollout.py --util 0.3',
+      goal: '看显存收紧后吞吐掉多少，为 colocate 做准备',
+      hint: '训推同卡时给 vLLM 的显存会少很多，提前知道代价',
+      output: `INFO  # GPU blocks: 15904, # CPU blocks: 4681
+Processed prompts: 100%|██████████| 64/64 [00:53<00:00]
+
+序列数      : 512
+生成 token  : 158720
+耗时        : 53.6 s
+吞吐        : 2961 tok/s
+平均长度    : 310 token
+
+读法：KV cache 块少了四成，吞吐掉了约 23%。
+这就是 colocate 的第一笔学费 —— 训练要占显存，采样就得慢下来。
+把 2961 记进笔记，这才是训练时该用的数。`,
+    },
+  ]}
+/>
+
+## 记进实验笔记
+
+新建一个 `NOTES.md`，第一条就写这个：
+
+```markdown
+## 环境基线（2026-08-19）
+
+- 卡：RTX 5090 32GB，驱动 580.65
+- torch 2.x + cu128，vLLM x.y
+- 模型：Qwen3-0.6B bf16
+
+| 场景 | util | 吞吐 tok/s | 显存 GiB |
+| --- | --- | --- | --- |
+| 纯推理 | 0.45 | 3852 | 14.5 |
+| colocate 预留 | 0.30 | 2961 | 9.8 |
+
+引擎启动耗时约 23 s（每次训练脚本重启都要付一次）
+```
+
+<Callout type="tip" title="引擎启动 20 多秒是固定成本">
+调试期间反复重启脚本，光等引擎就浪费大量时间。建议调试阶段用 Jupyter 或 IPython 保持进程常驻，只重跑训练循环那一段。
+</Callout>
+
+<Quiz
+  id="inf-1"
+  question="单卡训推同卡时，vLLM 的 gpu_memory_utilization 该设多少？"
+  options={[
+    { text: '0.3 左右起步，按实际剩余显存往上试', correct: true },
+    { text: '0.9，让采样尽可能快', feedback: 'vLLM 会预先吃掉 90% 显存，训练侧几乎没有空间，必 OOM。' },
+    { text: '1.0，反正是同一张卡', feedback: '这会让 vLLM 独占整张卡。' },
+    { text: '设成 0，让它自动分配', feedback: '0 意味着不分配显存，引擎起不来。' },
+  ]}
+  explain={<>
+    vLLM 是<strong>预先</strong>占用而不是按需申请。单卡 colocate 必须手工划一条线。
+    先用上一节的显存计算器算出训练侧要多少，再把剩下的给 vLLM。
+  </>}
+/>
+
+<Quiz
+  id="inf-2"
+  question="为什么这节课要求你必须自己测吞吐，而不是用一个参考值？"
+  options={[
+    { text: '同一张卡在不同 max_model_len、并发和 CUDA graph 设置下能差三倍，参考值会误导后续所有时间估算', correct: true },
+    { text: '因为每张 5090 的硅片质量不同', feedback: '个体差异只有百分之几，不是这里的原因。' },
+    { text: '因为 vLLM 每个版本吞吐都不一样', feedback: '版本有影响，但远不是主因。' },
+    { text: '为了让你熟悉命令行', feedback: '这个数字有实际用途：L4 的时间估算直接依赖它。' },
+  ]}
+  explain={<>
+    吞吐是配置的函数，不是硬件的常数。你要的是<strong>自己那套配置下</strong>的数字，
+    因为时间账要用它来回答「这次实验今晚能不能跑完」。
+  </>}
+/>
+
+## 这节课的落点
+
+- 采样占 RL 墙钟时间的 60%~80%，优化采样比优化训练划算
+- 用 vLLM 不用 `model.generate()`，吞吐差一个数量级
+- `gpu_memory_utilization` 是预占不是按需，colocate 时从 0.3 起步
+- `max_model_len` 设得越大能容纳的并发越少，按需求设不要图省事
+- CUDA graph 能捕获就别用 `--enforce-eager` 关掉
+- 产出物：写进 `NOTES.md` 的吞吐、显存、启动耗时四个数

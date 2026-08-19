@@ -1,0 +1,353 @@
+## 这一阶段要写的东西
+
+四节课拼出一个文件：
+
+```
+scripts/grpo_scratch/
+├── rollout.py   ← 本节：让模型生成一批答案
+├── rewards.py   ← 下一节：打分
+├── grpo.py      ← 第三节：优势、ratio、clip、KL
+└── train.py     ← 第四节：串起来跑
+```
+
+总共约 200 行。跑完你会有一个完全属于自己的 RL 训练脚本。
+
+## rollout 的输入输出，先定死
+
+写代码前先把接口定清楚，后面三节都按这个接口对接：
+
+```
+输入：一批 prompt（比如 8 个数学题）
+     ↓
+输出：一个列表，每个元素是
+     {
+       prompt_ids     : list[int]   ← prompt 的 token
+       completion_ids : list[int]   ← 生成部分的 token
+       text           : str         ← 生成的文本（打分和肉眼检查用）
+       group_id       : int         ← 属于哪个 prompt，算优势时要按组分
+     }
+```
+
+`prompts × G` 条记录。8 个 prompt、G=8 就是 64 条。
+
+<Callout type="trap" title="为什么一定要拿 token id，而不是只拿文本">
+这是新手最容易埋下的一个隐患。
+
+你可能想：拿文本就行了，训练时再 tokenize 一次。**不行。** 因为 `decode → encode` 不保证还原：
+
+```python
+ids = [15496, 11, 1917]
+text = tok.decode(ids)          # "Hello, world"
+ids2 = tok.encode(text)         # 可能变成 [15496, 11, 995] —— 长度或内容都可能变
+```
+
+BPE 分词在不同上下文里对同一段字符可能切法不同，空格和特殊符号尤其容易出问题。
+
+后果很隐蔽：你算 logprob 用的是重新 encode 的 token，而实际采样出来的是另一套 token。**ratio 一开始就不等于 1，训练看起来在跑，但优化的目标是错的。** 这种 bug 不会报错，只会让效果莫名其妙地差。
+
+规矩：**采样返回的 token id 一路带到训练，中间不要重新 tokenize。**
+</Callout>
+
+<Callout type="note" title="这件事工业框架有个专门的名字">
+Miles 把它叫 **TITO（Token-In-Token-Out）**，并写进了架构特性列表：避免 rollout 与 training 之间的 detokenize / retokenize 往返。
+
+一个听起来像营销词的缩写，本质就是「别重新 tokenize」。等你自己踩过一次就会觉得它值得单独列一条。
+</Callout>
+
+## 写 rollout
+
+```python
+# scripts/grpo_scratch/rollout.py
+from dataclasses import dataclass
+from vllm import LLM, SamplingParams
+
+
+@dataclass
+class Sample:
+    prompt_ids: list[int]
+    completion_ids: list[int]
+    text: str
+    group_id: int
+
+
+def build_engine(model_path: str, util: float = 0.3, max_len: int = 1024) -> LLM:
+    return LLM(
+        model=model_path,
+        gpu_memory_utilization=util,   # colocate：只给 vLLM 这么多
+        max_model_len=max_len,
+        dtype="bfloat16",
+        enable_sleep_mode=True,        # 训练时能把显存还回来，第四节用
+    )
+
+
+def rollout(
+    engine: LLM,
+    tokenizer,
+    questions: list[str],
+    group_size: int = 8,
+    max_tokens: int = 512,
+    temperature: float = 1.0,
+) -> list[Sample]:
+    # 用 chat template 拼 prompt。注意 add_generation_prompt=True，
+    # 否则模型不知道该轮到它说话了
+    prompts = [
+        tokenizer.apply_chat_template(
+            [{"role": "user", "content": q}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        for q in questions
+    ]
+
+    params = SamplingParams(
+        n=group_size,
+        temperature=temperature,
+        top_p=1.0,
+        max_tokens=max_tokens,
+    )
+    outputs = engine.generate(prompts, params)
+
+    samples: list[Sample] = []
+    for gid, out in enumerate(outputs):
+        for cand in out.outputs:
+            samples.append(
+                Sample(
+                    prompt_ids=list(out.prompt_token_ids),
+                    completion_ids=list(cand.token_ids),   # ← 关键：拿 id
+                    text=cand.text,
+                    group_id=gid,
+                )
+            )
+    return samples
+```
+
+不到 40 行。关键点都在注释里。
+
+## 采样参数怎么设
+
+### temperature：不能是 0
+
+```python
+temperature = 0    # ❌ 绝对不行
+```
+
+GRPO 的基线是**组内均值**。temperature=0 时 8 条回答完全一样，reward 完全一样，std = 0，**整组优势归零，一个梯度都没有。**
+
+推荐值：
+
+| temperature | 效果 |
+| --- | --- |
+| 0 | ❌ 组内无差异，训练不动 |
+| 0.7 ~ 0.8 | 偏保守，组内差异小，容易全对或全错 |
+| **1.0** | ✅ 默认起点，多样性和质量平衡 |
+| > 1.2 | 探索强但质量下滑，回答容易变成胡话 |
+
+<Callout type="tip" title="temperature 是探索与稳定的直接旋钮">
+「优势标准差一直接近 0」这个症状，第一个该动的就是它 —— 调高 temperature 能立刻增加组内差异。
+
+反过来如果输出质量崩了、格式全乱，先把它调回 1.0。
+</Callout>
+
+### top_p：设 1.0
+
+推理时常用 `top_p=0.9` 来提升质量。但训练时**不要裁剪分布**：
+
+被 `top_p` 砍掉的 token 概率在采样时是 0，但训练侧算 logprob 时用的是完整分布。两边不一致，会引入偏差。
+
+保持 `top_p = 1.0`，让采样分布和训练分布严格对齐。
+
+### max_tokens
+
+直接决定 KV cache 和采样时间。数学题任务 512 起步就够。
+
+<Callout type="warn" title="观察「有多少条回答顶到了上限」">
+如果大量回答的长度恰好等于 `max_tokens`，说明它们是被**截断**的，而不是自己说完的。
+
+被截断的回答通常没写出最终答案 → reward 判 0 → 模型收到「这样答不好」的信号，但真实原因是长度不够。**这是一种系统性的错误信号。**
+
+对策：调高 max_tokens，或者在 reward 里对截断的样本特殊处理（L4 会讲）。
+</Callout>
+
+## 跑一次，肉眼看看
+
+在写任何 reward 之前，**先把 8 条回答打印出来看**。这一步不能跳。
+
+```python
+from transformers import AutoTokenizer
+
+MODEL = "./models/Qwen3-0.6B"
+tok = AutoTokenizer.from_pretrained(MODEL)
+engine = build_engine(MODEL, util=0.3)
+
+q = "小明有 5 个苹果，他给了小红 2 个，又买了 7 个。他现在有几个苹果？"
+samples = rollout(engine, tok, [q], group_size=8, max_tokens=512)
+
+for i, s in enumerate(samples):
+    print(f"\n===== #{i}  ({len(s.completion_ids)} token) =====")
+    print(s.text.strip())
+```
+
+你会看到 8 条**不一样**的回答，质量参差不齐。这个参差就是 GRPO 的信息来源。
+
+<Terminal
+  id="rollout-check"
+  host="rl@forge"
+  cwd="~/rlforge"
+  intro={"rollout 检查演练。跑完采样后有三件事必须确认，按顺序来。\ngoals 看目标，hint 要提示。"}
+  commands={[
+    {
+      cmd: 'python -m scripts.grpo_scratch.rollout --peek',
+      goal: '肉眼确认 8 条回答确实不一样',
+      hint: '第一件事：如果 8 条一模一样，后面全白做',
+      output: `===== #0  (86 token) =====
+小明原来有5个苹果，给了小红2个后剩下 5-2=3 个，
+又买了7个，所以现在有 3+7=10 个。
+答案：10
+
+===== #1  (52 token) =====
+5-2+7=10
+答案：10
+
+===== #2  (134 token) =====
+让我一步步算。第一步，小明有5个。第二步，给出2个，
+5减2等于3。第三步，买了7个，3加7等于10。
+所以他现在有10个苹果。
+
+===== #3  (41 token) =====
+小明现在有 12 个苹果。
+
+===== #4  (512 token) =====
+我们来分析这道题。首先我们需要理解题意…（一直写到被截断）
+
+===== #5  (48 token) =====
+答案：10
+
+===== #6  (61 token) =====
+5 + 7 - 2 = 10，答案是 10
+
+===== #7  (95 token) =====
+5-2=3, 3+7=10。所以答案是10个苹果。
+
+读法：
+✅ 8 条明显不同 —— temperature 起作用了，组内有差异
+⚠️ #3 算错了（12）—— 这正是 RL 要修的
+⚠️ #4 长度恰好 512 = max_tokens，是被截断的，不是自己停的`,
+    },
+    {
+      cmd: 'python -m scripts.grpo_scratch.rollout --stats',
+      goal: '统计长度分布，看有多少条被截断',
+      hint: '长度恰好等于 max_tokens 的比例是个关键指标',
+      output: `样本数        : 512
+平均长度      : 78.4 token
+中位长度      : 61 token
+最长          : 512 token
+顶到上限的比例 : 4.1%  (21 / 512)
+组内 reward std 为 0 的组数 : 3 / 64
+
+读法：
+✅ 截断率 4.1% 可以接受（超过 15% 就该调高 max_tokens）
+✅ 平均 78 token 远小于上限，说明多数回答自己停下来了
+⚠️ 3 个组的 std = 0，这 3 组这一轮白跑了（约 5%，正常范围）`,
+    },
+    {
+      cmd: 'python -m scripts.grpo_scratch.rollout --verify-tokens',
+      goal: '验证 token id 没有被重新 tokenize 破坏',
+      hint: '这是最隐蔽的 bug：decode 再 encode 长度可能就变了',
+      output: `检查 512 条样本的 token 往返一致性…
+
+不一致样本: 37 / 512  (7.2%)
+
+样本 #12:
+  原始 completion_ids 长度 : 61
+  decode→encode 后长度     : 59   ← 变了！
+  首个不一致位置            : 34
+
+结论：decode→encode 确实不保证还原。
+这就是为什么必须把 completion_ids 一路带到训练侧，
+中间绝不重新 tokenize —— 否则 ratio 初值就不是 1，
+训练在优化一个错的目标，而且不会报任何错。`,
+    },
+  ]}
+/>
+
+## 拼 batch：pad 的方向
+
+采样出来的序列长度不一，喂进训练前要 pad 成矩阵。这里有个容易错的地方。
+
+```
+右 pad（训练用这个）           左 pad（生成时用）
+[prompt][completion][pad][pad]   [pad][pad][prompt][completion]
+```
+
+- **生成时用左 pad**：这样所有序列的「最后一个 token」在同一列，方便取下一步的 logits。vLLM 内部自己处理，你不用管。
+- **训练时用右 pad**：位置索引从 0 开始连续，attention mask 和 loss mask 都好算。
+
+同时要造两个 mask：
+
+```python
+attention_mask   # 哪些位置是真实 token（pad 之外全是 1）
+completion_mask  # 哪些位置要算 loss（只有 completion 部分是 1）
+```
+
+<Callout type="trap" title="loss mask 错位是「训练在跑但学不到」的常见原因">
+RL 只对**模型自己生成的部分**求梯度。prompt 是给定的，不该算 loss。
+
+而且要注意错一位的问题：预测第 `t` 个 token 用的是第 `t-1` 个位置的 logits。所以 mask 和 logits 之间通常要错一位对齐。
+
+**这个 bug 不会报错，只会让效果变差。** 第三节写 loss 时会给出具体的对齐检查方法。
+</Callout>
+
+<Quiz
+  id="ro-1"
+  question="为什么 rollout 必须返回 token id，而不是只返回文本？"
+  options={[
+    { text: '因为 decode 再 encode 不保证还原，会导致训练时算的 logprob 对应的不是实际采样出的 token', correct: true },
+    { text: '因为 token id 占的内存更小', feedback: '内存不是重点，正确性才是。' },
+    { text: '因为 vLLM 不返回文本', feedback: 'vLLM 两者都返回。' },
+    { text: '因为训练框架不接受字符串输入', feedback: '框架当然可以接受字符串再自己 tokenize —— 但那样就引入了这个 bug。' },
+  ]}
+  explain={<>
+    这是个不报错的隐藏 bug：ratio 初值不等于 1，训练在优化一个错位的目标。
+    Miles 把这条设计写成 TITO（Token-In-Token-Out）。
+  </>}
+/>
+
+<Quiz
+  id="ro-2"
+  question="GRPO 的 rollout 里 temperature 设成 0 会发生什么？"
+  options={[
+    { text: '组内 G 条回答完全相同，std = 0，优势全为 0，训练不动', correct: true },
+    { text: '训练更稳定，因为消除了随机性', feedback: '恰恰相反：GRPO 依赖组内差异提供信号，没有差异就没有梯度。' },
+    { text: '会报错', feedback: '不会报错，这正是它危险的地方 —— 训练照跑，只是什么都学不到。' },
+    { text: '只影响生成速度', feedback: '影响的是训练能否进行。' },
+  ]}
+  explain={<>
+    GRPO 的基线是组内均值，所以<strong>多样性是必需品而不是副作用</strong>。
+    默认 temperature = 1.0，top_p = 1.0（别裁剪分布，否则采样与训练分布不一致）。
+  </>}
+/>
+
+<Quiz
+  id="ro-3"
+  question="发现有 30% 的回答长度恰好等于 max_tokens，说明什么？"
+  options={[
+    { text: '它们是被截断的，多半没写出最终答案，会被误判为「答错」，形成系统性的错误信号', correct: true },
+    { text: '说明模型很啰嗦，但不影响训练', feedback: '影响很大：截断导致答案缺失、reward 判 0，模型收到的信号与真实原因不符。' },
+    { text: '说明 max_tokens 设得太大', feedback: '恰好相反，是设得太小了。' },
+    { text: '正常现象，不用处理', feedback: '30% 已经很高了。5% 以内算正常，超过 15% 就该处理。' },
+  ]}
+  explain={<>
+    截断 → 答案缺失 → reward 判 0 → 模型学到「这样答不好」，但真实原因是长度不够。
+    对策：调高 max_tokens，或在 reward 里给截断样本单独处理。
+  </>}
+/>
+
+## 这节课的落点
+
+- 接口定死：`(prompt_ids, completion_ids, text, group_id)`，共 `prompts × G` 条
+- **token id 一路带到训练，中间绝不重新 tokenize**（TITO）
+- temperature 必须 > 0，默认 1.0；top_p 保持 1.0 让采样与训练分布一致
+- 观察「顶到 max_tokens 的比例」，超过 15% 要处理
+- 生成用左 pad（vLLM 自理），训练用右 pad
+- loss mask 只覆盖 completion，且注意与 logits 错一位对齐
+- 写 reward 前先把 8 条回答打印出来肉眼看一遍

@@ -1,0 +1,355 @@
+## 带着伤口来读
+
+现在你已经：手写过 GRPO，被权重同步坑过，为 colocate 的显存划过线，见过整组优势归零。
+
+**这时候读工业框架的设计文档，效果和空着手读完全不同。** 每一个模块你都能对上一个自己受过的伤。
+
+这一节读两个框架：
+
+- **[slime](https://thudm.github.io/slime/)** — 清华 THUDM，GLM-4.5 到 GLM-5.2 背后的 RL 框架
+- **[Miles](https://miles.radixark.com/docs)** — 从 slime 分叉，SGLang + Megatron，主打全异步与超大规模
+
+再说一次：**你不会在 5090 上跑它们**（slime 最小例子 8×H100，Miles 硬件列表从 A100 起）。这一节的产出是**看懂它们的设计和启动脚本**。
+
+## slime：三段结构
+
+slime 的架构可以画成三个盒子：
+
+```
+                ┌─────────────────────────┐
+                │      Data Buffer        │
+                │   数据从哪来、怎么排队     │
+                └────┬───────────────┬────┘
+                     ↑               ↓
+        ┌────────────┴────┐   ┌──────┴──────────┐
+        │    Rollout      │   │    Training     │
+        │    SGLang       │   │   Megatron-LM   │
+        │  --sglang-*     │   │  Megatron 原生参数 │
+        └────────┬────────┘   └─────────────────┘
+                 ↑                     │
+     自定义生成逻辑 / 工具调用            │
+     沙箱 / verifier / 多智能体          │
+                 └───── 权重同步 ────────┘
+```
+
+对照你的脚本：
+
+| slime | 你写的 |
+| --- | --- |
+| Rollout (SGLang) | `rollout()` 里的 vLLM 调用 |
+| Data Buffer | 你那个 `samples` 列表 |
+| Training (Megatron) | `model(...)` + `loss.backward()` |
+| 权重同步 | `sync_weights_to_vllm()` |
+
+**结构是一样的。** 差别全在每个盒子内部的工程量。
+
+### 设计取舍一：只绑 SGLang 一个后端
+
+slime 文档明确说了理由：绑定单一后端能保留 SGLang 特有的 serving、routing、caching、disaggregation 和权重同步行为；抽象出「通用推理引擎接口」会把这些压成最小公分母。
+
+它甚至把 SGLang 的参数**原样透传**，只加个前缀：
+
+```bash
+--sglang-log-level INFO
+--sglang-mem-fraction-static 0.8
+--sglang-kv-cache-dtype fp8_e4m3
+```
+
+Megatron 那侧也一样：Megatron 的原生参数直接可用，不重新包一层。
+
+<Callout type="tip" title="这个取舍值得学">
+「支持多个后端」听起来更专业，但代价是所有后端只能用交集功能。
+
+当某个能力对性能至关重要时（这里是权重同步），**绑定一个实现、把它用到极致**往往比抽象更划算。你写代码时也可以问自己：这层抽象买到了什么，付出了什么。
+</Callout>
+
+### 设计取舍二：agentic 就是数据生成
+
+slime 的原话是：避免变成「一堆互不相干的 trainer、rollout 服务和 agent 框架的重型堆叠」。
+
+具体做法是把工具调用、沙箱、verifier 奖励、环境反馈、多智能体循环、长程工作流**全部挂到 Data Buffer 这一条路径上**，而不是给训练内核分叉。
+
+```
+训练侧看到的永远是：(prompt_ids, completion_ids, reward)
+
+至于这个 reward 是
+  · 正则匹配出来的
+  · 单元测试跑出来的
+  · 一个 agent 调了五次工具之后算出来的
+  · 多智能体博弈的结果
+→ 训练侧不关心
+```
+
+<Callout type="note" title="这一条在单卡上也该借鉴">
+如果你的手写脚本把 rollout 抽象成「一个产出 `Sample` 列表的函数」，那么换任务时只需要改那个函数，`train.py` 一行不动。
+
+L2 的脚本已经是这个结构了 —— 现在你知道它对应工业框架里的哪个设计了。
+</Callout>
+
+## 读一份真实的启动脚本
+
+slime 的入门例子是 **GLM-Z1-9B-0414 在 8×H100 上跑 GRPO**。它的启动脚本有约四十个参数，第一次看会懵。
+
+关键在于：**这四十个参数分成五类，每一类你都已经认识。**
+
+### 第一类：checkpoint 与模型（4 个）
+
+```bash
+--hf-checkpoint /root/GLM-Z1-9B-0414          # 只用 tokenizer 和 config，权重不用
+--ref-load /root/GLM-Z1-9B-0414_torch_dist    # 参考模型（Megatron 格式）
+--load  /root/ckpt      --save /root/ckpt     # 通常填同一个，方便断点续训
+--save-interval 20
+```
+
+对照你的脚本：`MODEL` 常量 + 你自己加的那二十行 checkpoint。
+
+<Callout type="warn" title="为什么要两种格式的 checkpoint">
+Megatron 用自己的分布式格式（`torch_dist`），不能直接吃 HuggingFace 权重。所以训练前要转一次：
+
+```bash
+python tools/convert_hf_to_torch_dist.py ${MODEL_ARGS[@]} \
+    --hf-checkpoint /root/GLM-Z1-9B-0414 \
+    --save /root/GLM-Z1-9B-0414_torch_dist
+```
+
+训练完再转回去。这一步是 Megatron 系框架的固定成本 —— 也是它们对新手不友好的原因之一。单卡上你用 transformers，完全没有这个问题。
+</Callout>
+
+### 第二类：rollout（10 个）
+
+```bash
+--prompt-data /root/dapo-math-17k --input-key prompt --label-key label
+--apply-chat-template --rollout-shuffle
+--rm-type deepscaler                   # ← 判分器类型，对应你的 rewards.py
+--num-rollout 3000                     # ← 训练步数
+--rollout-batch-size 16                # ← 每步 prompt 数
+--n-samples-per-prompt 8               # ← 你的 GROUP_SIZE
+--rollout-max-response-len 8192        # ← 你的 max_tokens
+--rollout-temperature 1                # ← temperature
+--global-batch-size 128
+```
+
+**每一个你都认识。**
+
+注意那条 batch 恒等式：
+
+```
+rollout_batch_size × n_samples_per_prompt = global_batch_size × num_steps_per_rollout
+                 16 × 8 = 128            =        128 × 1
+```
+
+翻译：**采出来的序列数，必须等于训练侧消费的样本数。** 你的脚本里这个恒等式隐含成立（采多少训多少），框架显式化是因为它支持「采一批、训多步」（`num_steps_per_rollout > 1`）—— 那种情况下 ratio 才会真的偏离 1，clip 才真正开始起作用。
+
+<Callout type="note" title="这解释了 L2 那个「ratio 恒为 1」的检查">
+你的脚本每批只更新一次，所以 ratio 恒等于 1，clip 从来不生效（`clip_frac` 只在梯度累积的微妙数值差上有一点非零）。
+
+框架里 `num_steps_per_rollout > 1` 时，同一批数据会被用来更新多次，第二次开始 ratio 就偏离 1 了 —— **这才是 PPO/GRPO 里 clip 真正的用武之地**。
+
+想在自己脚本里体验这个，就把 loss 那段用同一批数据循环 2~4 次。
+</Callout>
+
+### 第三类：算法（8 个）
+
+```bash
+--advantage-estimator grpo             # ← 你的 group_advantages()
+--use-kl-loss
+--kl-loss-coef 0.00                    # ← 你的 BETA=0
+--kl-loss-type low_var_kl              # ← 你的 kl_k3()
+--entropy-coef 0.00
+--eps-clip 0.2                         # ← 你的 eps_low
+--eps-clip-high 0.28                   # ← 你的 eps_high（非对称）
+--calculate-per-token-loss             # ← token 平权 vs 序列平权那个开关
+```
+
+<Callout type="tip" title="这八个参数几乎就是你 L2 写的那二十行">
+`low_var_kl` 就是 k3 估计。`--eps-clip 0.2 --eps-clip-high 0.28` 就是 DAPO 的非对称 clip。
+`--use-kl-loss` 开着但系数是 0 —— 就是「KL 只记不罚」。
+
+除了 grpo，还能换 `gspo`、`reinforce_plus_plus`、`ppo`。**换算法只改一个字符串** —— 这是上框架最实在的好处之一：想做算法对比时不用每个都自己实现。
+</Callout>
+
+### 第四类：并行与性能（7 个）
+
+```bash
+--tensor-model-parallel-size 2         # TP：单卡上是 1
+--sequence-parallel
+--pipeline-model-parallel-size 1
+--context-parallel-size 2              # CP
+--use-dynamic-batch-size
+--max-tokens-per-gpu 4608
+--rollout-num-gpus-per-engine 2        # 一个 SGLang 引擎占几张卡
+```
+
+**这一类是单卡上唯一完全用不到的。** TP=2、CP=2 意味着训练侧一个模型摊在 4 张卡上；`rollout-num-gpus-per-engine 2` 意味着推理引擎也占 2 张。
+
+`--use-dynamic-batch-size` 配 `--max-tokens-per-gpu` 值得注意：它按 token 数打包变长样本，而不是按序列数凑 batch。这样 `micro_batch_size` 就不重要了。slime 文档说「强烈建议开启」，因为打包能保持 per-sample / per-token loss 的正确性。
+
+<Callout type="gpu" title="dynamic batch 在单卡上也值得学">
+你的脚本用固定 `MICRO_BATCH=2`。如果这两条序列一条 50 token 一条 500 token，你就得按 500 pad，浪费了大量算力。
+
+按 token 数打包（比如「每个 micro batch 不超过 4096 token」）能显著提高利用率。这是单卡上可以自己实现的优化。
+</Callout>
+
+### 第五类：优化器（5 个）
+
+```bash
+--optimizer adam --lr 1e-6
+--lr-decay-style constant
+--weight-decay 0.1
+--adam-beta1 0.9 --adam-beta2 0.98
+```
+
+和你脚本里的 `AdamW(lr=1e-6, betas=(0.9, 0.98))` 一模一样。注意 `beta2=0.98`（不是默认的 0.999）和 `lr=1e-6`（比 SFT 小一到两个数量级）—— **这两个是 RL 后训练的常规配置**，可以直接抄。
+
+## Miles 的四个关键词
+
+Miles 从 slime 分叉，主攻更大规模和更高吞吐。它的四个特性各解决一个你能理解的问题：
+
+### fully-async：采样和训练完全解耦
+
+你的循环是严格串行的。Miles 让 rollout worker 和 training worker 各跑各的，中间用可配置的 on/off-policy 调度连接。
+
+代价是训练用的数据来自稍旧的策略（off-policy）。收益是消除了「等采样」的气泡。
+
+<Callout type="note" title="这是 RL 系统设计的核心张力">
+**越 on-policy 越准，越异步越快。**
+
+- 完全 on-policy（你的脚本）：正确，但采样时训练侧闲着
+- 完全异步：吞吐拉满，但数据可能来自几步前的策略
+
+框架的价值就是把这个旋钮暴露出来让你调。单卡上你没有这个旋钮 —— 只有一张卡，串行是唯一选项。
+</Callout>
+
+### TITO：token 进，token 出
+
+**这个你已经踩过了。** Miles 把「避免 rollout 与 training 之间的 detokenize / retokenize 往返」写成一条架构特性。
+
+L2 那节我们让你自己验证过：`decode → encode` 会改变 token 序列，导致 ratio 初值不为 1。**同一个坑，工业框架给了它一个缩写。**
+
+### R3（Rollout Routing Replay）：MoE 专用
+
+MoE 模型里每个 token 会被路由到不同专家。问题是：**rollout 时（SGLang）和训练时（Megatron）的路由可能不一致** —— 同一个 token 走了不同专家，算出的 logprob 就对不上，ratio 又不为 1 了。
+
+R3 的做法是把 rollout 时的路由决策记下来，训练前向时**重放**同样的路由。
+
+<Callout type="tip" title="R3 和 TITO 是同一类问题">
+两者都是「保证采样侧和训练侧看到的是同一件事」：
+
+- TITO：保证 **token 序列**一致
+- R3：保证 **专家路由**一致
+- TIS / importance sampling 修正：修补**概率计算**的差异
+
+这三条合起来是一个主题：**采样引擎和训练引擎必须对齐，否则 RL 的数学前提就破了。** 你在单卡上只需要处理第一条和第三条，MoE 才会遇到第二条。
+</Callout>
+
+### P2P weight transfer：权重同步走 RDMA
+
+你的同步是一次显存内拷贝，2 秒。跨节点时，朴素做法要经过 CPU 内存，一次几十秒。
+
+Miles 用 P2P RDMA 直传，宣称权重能在几秒内落到推理引擎上；还有 delta 同步（只传变化部分）。
+
+## 单卡上仍然有用的部分
+
+读完两个框架，哪些设计在你的单卡脚本里也值得抄？比你想的多：
+
+| 设计 | 单卡能用吗 | 怎么用 |
+| --- | --- | --- |
+| Data Buffer 抽象 | ✅ | rollout 抽象成产出 Sample 的函数，换任务不动训练代码 |
+| TITO | ✅ **必须** | token id 一路带到训练 |
+| dynamic batch（按 token 打包） | ✅ | 显著提高变长序列的利用率 |
+| 动态采样过滤退化组 | ✅ | 多采一些，丢掉 std=0 的组 |
+| partial rollout | ✅ | 半成品缓存到下一轮，别浪费 |
+| 非对称 clip 0.2/0.28 | ✅ | 直接抄参数 |
+| `lr=1e-6, beta2=0.98` | ✅ | 直接抄参数 |
+| KL 只记不罚 | ✅ | 直接抄 |
+| checkpoint + 续训 | ✅ **必须** | 二十行代码 |
+| observability / trace | ✅ | 至少把八个指标记全 |
+| TP / PP / CP / EP | ❌ | 并行度是 1 |
+| fully-async | ❌ | 只有一张卡 |
+| P2P weight transfer | ❌ | 显存内拷贝已经够快 |
+| R3 | ❌ | 不跑 MoE |
+
+<Callout type="tip" title="动态采样值得单独说">
+slime 的 DAPO 式动态采样：
+
+```bash
+--over-sampling-batch-size 32          # 比 rollout-batch-size 大
+# 配一个过滤器，如 check_reward_nonzero_std
+```
+
+意思是：多采一些 prompt，把「组内 reward 标准差为 0」的组丢掉，只留有信息量的补到目标 batch。
+
+**这直接解决你 L2 遇到的「adv_std 越训越低」问题**，而且单卡完全可以实现 —— 就是在打分之后加一个过滤，不够再采一轮。
+</Callout>
+
+<Quiz
+  id="arch-1"
+  question="slime 只支持 SGLang 一个推理后端，它给出的理由是什么？"
+  options={[
+    { text: '绑定单一后端能保留 SGLang 特有的 serving、routing、caching 和权重同步行为，抽象通用接口会把这些压成最小公分母', correct: true },
+    { text: '因为 vLLM 有许可证限制', feedback: 'vLLM 是 Apache 2.0，没有这个问题。' },
+    { text: '因为 SGLang 是同一个团队开发的', feedback: 'SGLang 和 slime 不是同一个团队。理由是技术性的。' },
+    { text: '因为只有 SGLang 支持 Megatron', feedback: '推理引擎和训练后端是解耦的，不存在这种依赖。' },
+  ]}
+  explain={<>
+    这是个值得学的工程判断：当某个能力对性能至关重要时，
+    <strong>绑定一个实现用到极致</strong> 往往比抽象成通用接口更划算。
+  </>}
+/>
+
+<Quiz
+  id="arch-2"
+  question="slime 的 batch 恒等式 `rollout_batch_size × n_samples_per_prompt = global_batch_size × num_steps_per_rollout` 说明了什么？"
+  options={[
+    { text: '采出来的序列总数必须等于训练侧消费的样本总数；num_steps_per_rollout > 1 时同一批数据被多次更新，此时 ratio 才真正偏离 1', correct: true },
+    { text: '这只是一个内部实现细节，用户不用关心', feedback: 'slime 会校验它，填错会报错。而且它揭示了 clip 何时真正生效。' },
+    { text: '它保证了 GRPO 的优势零均值', feedback: '零均值来自组内减均值，与 batch 恒等式无关。' },
+    { text: '它决定了显存占用上限', feedback: '相关但不是这条恒等式的含义。' },
+  ]}
+  explain={<>
+    你的脚本每批只更新一次，所以 ratio 恒为 1、clip 从不生效。
+    <code>num_steps_per_rollout &gt; 1</code> 时才会出现真正的 off-policy 偏差 —— 
+    这才是 clip 的用武之地。想体验就把 loss 那段用同一批数据循环几次。
+  </>}
+/>
+
+<Quiz
+  id="arch-3"
+  question="TITO、R3、importance sampling 修正这三个机制的共同主题是什么？"
+  options={[
+    { text: '保证采样引擎和训练引擎看到的是同一件事：token 序列一致、专家路由一致、概率计算一致', correct: true },
+    { text: '都是为了省显存', feedback: '三者都不是显存优化。' },
+    { text: '都是为了加速权重同步', feedback: '权重同步是另一条链路（P2P、delta 同步）。' },
+    { text: '都只在 MoE 模型上需要', feedback: '只有 R3 是 MoE 专用；TITO 和 IS 修正对稠密模型同样必要。' },
+  ]}
+  explain={<>
+    RL 的数学前提是「训练时算的概率，就是采样时用的那个策略的概率」。
+    这三个机制各自堵住一处偏差。单卡上你要处理 TITO 和 IS 修正，MoE 才会遇到 R3。
+  </>}
+/>
+
+<Quiz
+  id="arch-4"
+  question="下面哪些框架设计在你的单卡手写脚本里也值得实现？（多选）"
+  options={[
+    { text: '动态采样：多采一些，丢掉 std=0 的退化组', correct: true },
+    { text: 'dynamic batch：按 token 数打包变长序列，而不是按序列数凑 batch', correct: true },
+    { text: 'checkpoint 与断点续训', correct: true },
+    { text: '张量并行（TP）', feedback: '单卡上并行度是 1，实现了也没有任何作用。' },
+  ]}
+  explain={<>
+    前三个都能在单卡上带来实际收益：动态采样直接治「adv_std 越训越低」，
+    dynamic batch 提高变长序列的算力利用率，checkpoint 在任何规模下都必要。
+  </>}
+/>
+
+## 这节课的落点
+
+- slime = Rollout(SGLang) + Data Buffer + Training(Megatron)，结构和你的脚本同构
+- 只绑一个推理后端是刻意取舍：保住关键能力不被抽象成最小公分母
+- agentic 全部收敛成「数据生成」，训练侧只看到 `(prompt, completion, reward)`
+- 四十个参数分五类：checkpoint / rollout / 算法 / 并行 / 优化器，只有「并行」那类单卡用不到
+- batch 恒等式揭示了 clip 何时真正生效（`num_steps_per_rollout > 1`）
+- Miles 四关键词：fully-async（快 vs 准的旋钮）、TITO（你踩过的坑）、R3（MoE 路由一致）、P2P 权重传输
+- TITO / R3 / IS 修正是同一主题：**采样引擎与训练引擎必须对齐**
+- 可以抄回单卡的：Data Buffer 抽象、动态采样、dynamic batch、非对称 clip、`lr=1e-6 beta2=0.98`、checkpoint

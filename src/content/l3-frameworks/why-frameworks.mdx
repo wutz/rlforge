@@ -1,0 +1,234 @@
+## 你的两百行脚本，现在够用
+
+先说清楚：L2 那个脚本**不是玩具**。在单卡小模型上，它跑得对、跑得动、而且你完全掌控。
+
+但它有五个明确的天花板。这一节把它们一条条摊开，并对应到框架里的具体模块——这样你读框架文档时，看到的不是陌生术语，而是「哦，这就是解决我那个问题的」。
+
+## 硬伤一：模型放不下
+
+你的脚本假设 `model.cuda()` 能成功。7B 以上就不成立了。
+
+框架的解法是**把一个模型切开放到多张卡上**。切法有四种，通常组合使用：
+
+| 并行方式 | 切什么 | 通信量 | 什么时候用 |
+| --- | --- | --- | --- |
+| **TP** 张量并行 | 每一层的权重矩阵横向切开 | 每层都要 all-reduce，**很重** | 单层放不下时；要求卡间高速互联 |
+| **PP** 流水线并行 | 按层切，前几层在卡0，后几层在卡1 | 只在切分点传激活，轻 | 层数多、卡间带宽一般 |
+| **CP** 上下文并行 | 按序列长度切 | 注意力要交换 KV | 超长上下文 |
+| **EP** 专家并行 | MoE 的专家分到不同卡 | 路由时 all-to-all | 只有 MoE 需要 |
+
+<Callout type="gpu" title="为什么 5090 上这些都用不上">
+TP 要求卡间高速互联。5090 **没有 NVLink**，多卡之间走 PCIe，TP 的 all-reduce 会成为瓶颈——两张 5090 做 TP 往往比一张卡还慢。
+
+所以消费卡的多卡方案通常是**数据并行**（每张卡放完整模型，各算一部分数据）而不是模型并行。而数据并行不能解决「单卡放不下」的问题。
+
+这就是「32GB 是硬墙」的技术原因：不是钱的问题，是拓扑的问题。
+</Callout>
+
+slime 直接把 Megatron 的参数原样透传（`--tensor-model-parallel-size`、`--pipeline-model-parallel-size`、`--context-parallel-size`），因为这一层的复杂度它不打算重新封装。
+
+## 硬伤二：采样慢，而且卡住训练
+
+你的循环是严格串行的：
+
+```
+采样 ████████████████ 30s
+训练          ██████ 12s        ← 采样时 GPU 在做生成，训练侧闲着
+采样 ████████████████ 30s
+训练          ██████ 12s
+```
+
+单卡上这没办法——只有一张卡，不可能同时做两件事。
+
+多卡就有办法了：**让采样和训练同时进行**。
+
+```
+卡 0-3  采样  ████████████████████████████  一直在生成
+卡 4-7  训练  ██████ ██████ ██████ ██████   一直在学
+```
+
+这就是 **fully-async**（完全异步）。代价是引入了 off-policy：训练用的数据来自稍旧的策略。所以框架要提供「允许旧多少」的控制——Miles 的说法是「rollout 与 training 解耦，on/off-policy 调度可配」。
+
+中间还需要一个组件来缓冲：采样产出的数据放哪、按什么顺序取、半成品怎么处理。slime 把它叫 **Data Buffer**。
+
+<Callout type="note" title="Data Buffer 是 slime 架构里最值得学的一个抽象">
+slime 的设计思路是：**把 agentic 工作流、工具调用、verifier 奖励、环境反馈，全部收敛成「数据生成」这一件事**，而不是为每种场景分叉训练内核。
+
+```
+       ┌──────────────────────────────┐
+       │        Data Buffer           │
+       │  （数据从哪来、怎么排队）        │
+       └──────┬────────────────┬──────┘
+              ↑                ↓
+      ┌───────┴──────┐  ┌──────┴───────┐
+      │   Rollout    │  │   Training   │
+      │  (SGLang)    │  │  (Megatron)  │
+      └──────────────┘  └──────────────┘
+              ↑
+    自定义生成逻辑 / 工具调用 / 沙箱 / verifier / 多智能体
+```
+
+这个抽象的价值在于：**你想接一个新环境，只需要往 Buffer 里塞数据，不用改训练代码。** 单轮数学题和多轮 agent 任务在训练侧长得一样。
+
+这一条在单卡上也有用——你的脚本如果把 rollout 抽象成「一个产出 Sample 的函数」，后面换任务就只改那个函数。
+</Callout>
+
+## 硬伤三：权重同步慢
+
+你的 `sync_weights_to_vllm` 是一次显存内拷贝，1~3 秒。
+
+多卡上这件事复杂得多：训练侧权重按 TP/PP 切在 8 张卡上，推理侧的切法不一样，要先聚合再重分发。朴素做法要经过 CPU 内存，一次几十秒——**占单步时间的一大块**。
+
+框架的优化：
+
+| 技术 | 做法 | 出处 |
+| --- | --- | --- |
+| **P2P / RDMA 直传** | GPU 显存直接到 GPU 显存，绕过 CPU | Miles |
+| **delta 同步** | 只传变化的部分 | Miles |
+| **只同步一次每步** | 别在 micro batch 之间同步 | 通用 |
+
+这也解释了 slime 一个看起来任性的设计决定：**只支持 SGLang 一个推理后端**。
+
+它的理由写得很直白：绑定一个后端能保留 SGLang 特有的 serving、routing、caching、disaggregation 和**权重同步**行为；抽象出「通用推理引擎接口」会把这些能力压成最小公分母。
+
+<Callout type="tip" title="这个取舍对你写代码也有启发">
+「支持多个后端」听起来更好，但代价是所有后端只能用交集功能。
+
+当某个能力（这里是权重同步）对性能至关重要时，**绑定一个实现、把它用到极致**往往比抽象更划算。
+</Callout>
+
+## 硬伤四：一步挂了全盘重来
+
+你的脚本跑到 150 步时 OOM，或者 vLLM 引擎崩了。会发生什么？整个进程死掉，150 步的成果没了。
+
+框架提供两层保护：
+
+- **checkpoint**：定期存权重和优化器状态，能从中断处继续（slime 的 `--save-interval`）
+- **容错**：Miles 的说法是「SGLang 引擎挂掉后自动恢复并继续，不重启不暂停整个训练」
+
+<Callout type="warn" title="手写脚本至少要加 checkpoint">
+这是五个硬伤里唯一**你应该现在就补上**的。二十行代码：
+
+```python
+if step % 20 == 0:
+    torch.save({
+        "step": step,
+        "model": model.state_dict(),
+        "opt": opt.state_dict(),
+    }, f"ckpt/step-{step}.pt")
+```
+
+跑两小时的实验，没有 checkpoint 就是在赌博。
+</Callout>
+
+## 硬伤五：看不见发生了什么
+
+你的日志是一行 print。够用，但当训练变慢时你答不出「慢在哪」。
+
+框架提供：
+
+- **observability**：指标推到 wandb / TensorBoard
+- **trace viewer**：把每一步分解成采样、前向、反向、同步的时间线
+- **profiling**：定位到具体 kernel
+- **debug replay**：保存一步的输入，离线重放定位数值问题
+
+slime 的开发者指南里专门有 CI、debug、trace、profiling 四页文档。这个比例说明了一件事：**RL 训练的调试成本高到需要专门的工具链。**
+
+## 术语对照表
+
+这张表是这一节真正的产出物。读框架文档时对着看：
+
+| 你写过的东西 | slime | Miles / TRL |
+| --- | --- | --- |
+| `(r - mean) / std` | `--advantage-estimator grpo` | `advantage_estimator` |
+| 一个 prompt 采几条 | `--n-samples-per-prompt` | `num_generations` |
+| KL 系数 | `--kl-loss-coef` | `beta` |
+| KL 只记不罚 | `--use-kl-loss` + coef 0 | 同 |
+| clip 阈值 | `--eps-clip` / `--eps-clip-high` | `epsilon` / `epsilon_high` |
+| 每步 prompt 数 | `--rollout-batch-size` | `per_device_train_batch_size` |
+| 训练侧总 batch | `--global-batch-size` | `gradient_accumulation_steps` 折算 |
+| `max_tokens` | `--rollout-max-response-len` | `max_completion_length` |
+| temperature | `--rollout-temperature` | `temperature` |
+| 训推同卡 | `--colocate` | `vllm_mode="colocate"` |
+| 给 vLLM 多少显存 | `--sglang-mem-fraction-static` | `vllm_gpu_memory_utilization` |
+| 序列平权 / token 平权 | `--calculate-per-token-loss` | `loss_type` |
+| 修正采样与训练的概率差 | `--use-tis` | `vllm_importance_sampling_correction` |
+| 过滤退化组 | `--over-sampling-batch-size` + filter | — |
+| 你的 `sync_weights_to_vllm` | weight sync | P2P weight transfer |
+| 你的 `rollout()` 函数 | Data Buffer / rollout function | agentic rollout |
+
+<Callout type="note" title="注意 slime 的 batch 恒等式">
+slime 文档里有一条约束：
+
+```
+rollout_batch_size × n_samples_per_prompt = global_batch_size × num_steps_per_rollout
+```
+
+翻译成你的脚本：**采样出来的序列总数，必须等于训练侧要消费的样本总数。** 你的脚本里这个恒等式是隐含成立的（采多少训多少），框架把它显式化，是因为它支持「采一批、训多步」。
+</Callout>
+
+## 什么时候该上框架
+
+| 你的情况 | 建议 |
+| --- | --- |
+| 单卡、≤2B 模型、单轮任务 | **继续手写**。你的脚本更好调 |
+| 想换算法（GSPO、Reinforce++）做对比 | 上框架，省得每个都自己实现 |
+| 要多卡 | 必须上框架 |
+| 模型 > 8B | 必须上框架 |
+| 多轮 / 工具调用 / 沙箱 | 上框架，这些基础设施不值得自己造 |
+| 要给别人复现 | 上框架，配置比代码好交接 |
+
+<Quiz
+  id="wf-1"
+  question="为什么两张 RTX 5090 做张量并行（TP）往往比一张卡还慢？"
+  options={[
+    { text: '5090 没有 NVLink，TP 每层都要 all-reduce，走 PCIe 的通信开销超过了并行收益', correct: true },
+    { text: '因为 5090 的算力太弱', feedback: '5090 算力很强，问题在卡间通信拓扑。' },
+    { text: '因为 PyTorch 不支持消费卡做 TP', feedback: '技术上支持，只是不划算。' },
+    { text: '因为显存总量没有增加', feedback: 'TP 确实能把一个模型摊到两张卡上，显存是够用了 —— 问题是通信太贵。' },
+  ]}
+  explain={<>
+    TP 的通信频率极高（每层都要）。没有 NVLink 时这是致命的。
+    这就是「32GB 是硬墙」的技术原因：不是钱的问题，是拓扑的问题 —— 
+    消费卡的多卡方案通常是数据并行，而数据并行解决不了「单卡放不下」。
+  </>}
+/>
+
+<Quiz
+  id="wf-2"
+  question="slime 的 Data Buffer 抽象，核心价值是什么？"
+  options={[
+    { text: '把 agentic 工作流、工具调用、verifier 奖励都收敛成「数据生成」，接新环境不用改训练内核', correct: true },
+    { text: '把训练数据缓存到磁盘上省显存', feedback: '它不是磁盘缓存，是数据流的抽象层。' },
+    { text: '加速权重同步', feedback: '权重同步是另一条链路。' },
+    { text: '替代 checkpoint 机制', feedback: '两者无关。' },
+  ]}
+  explain={<>
+    这个抽象让单轮数学题和多轮 agent 任务在训练侧长得一样。
+    你的手写脚本也能借鉴：把 rollout 抽象成「产出 Sample 的函数」，换任务就只改那个函数。
+  </>}
+/>
+
+<Quiz
+  id="wf-3"
+  question="五个硬伤里，哪一个是你现在就该给手写脚本补上的？"
+  options={[
+    { text: 'checkpoint —— 跑两小时的实验没有存档就是在赌博', correct: true },
+    { text: '张量并行', feedback: '单卡上并行度是 1，加了没有意义。' },
+    { text: '异步 rollout', feedback: '单卡上采样和训练不可能同时做，异步无从谈起。' },
+    { text: 'P2P 权重传输', feedback: '单卡上同步就是一次显存内拷贝，几秒钟，不需要优化。' },
+  ]}
+  explain={<>
+    另外四个都是多卡场景的问题。checkpoint 不是 —— 它在任何规模下都必要，
+    而且只要二十行代码。
+  </>}
+/>
+
+## 这节课的落点
+
+- 五个硬伤：模型放不下、采样卡住训练、权重同步慢、挂了重来、看不见
+- TP/PP/CP/EP 各切什么；5090 无 NVLink 所以模型并行不划算，32GB 是拓扑硬墙
+- Data Buffer 把所有数据来源收敛成「数据生成」，是最值得借鉴的抽象
+- slime 只绑 SGLang 一个后端，是为了保住权重同步等关键能力不被抽象成最小公分母
+- 术语对照表：你写的每个变量在框架里都有对应参数
+- 现在就该补的只有 checkpoint；其余四个等你真上多卡再说

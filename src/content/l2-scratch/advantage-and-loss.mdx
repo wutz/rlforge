@@ -1,0 +1,361 @@
+## 整个算法只有二十行
+
+前面两节做的都是准备工作。GRPO 本身——优势、ratio、clip、KL——加起来大约二十行 PyTorch。
+
+这一节逐行写出来，并且**每一步都给一个可以打印验证的中间量**。RL 的 bug 大多不报错，只能靠对中间量的预期来发现。
+
+## 第一步：算 logprob
+
+给定一批序列，取出**实际采样出的那些 token** 的对数概率。
+
+```python
+# scripts/grpo_scratch/grpo.py
+import torch
+import torch.nn.functional as F
+
+
+def sequence_logprobs(model, input_ids, attention_mask, completion_mask):
+    """
+    返回每个 completion token 的 logprob，形状与 completion_mask 相同。
+    """
+    out = model(input_ids=input_ids, attention_mask=attention_mask)
+    logits = out.logits                          # [B, T, V]
+
+    # 关键的错一位：位置 t 的 logits 预测的是位置 t+1 的 token
+    logits = logits[:, :-1, :]                   # [B, T-1, V]
+    targets = input_ids[:, 1:]                   # [B, T-1]
+    mask = completion_mask[:, 1:]                # [B, T-1]
+
+    logprobs = torch.log_softmax(logits.float(), dim=-1)
+    token_logprobs = torch.gather(
+        logprobs, dim=-1, index=targets.unsqueeze(-1)
+    ).squeeze(-1)                                # [B, T-1]
+
+    return token_logprobs, mask
+```
+
+<Callout type="trap" title="错一位是这里最容易搞错的地方">
+位置 `t` 的 logits 是「看过 0..t 之后对 t+1 的预测」。所以要拿位置 `t` 的 token 的概率，得用位置 `t-1` 的 logits。
+
+代码里就是 `logits[:, :-1]` 配 `input_ids[:, 1:]`。
+
+**验证方法**：拿一条已知序列，用同一个模型算两次 logprob，然后手工用 `model(...)` 逐 token 检查其中一个位置。或者更简单：见下面的 ratio 检查。
+</Callout>
+
+<Callout type="warn" title="log_softmax 前转 float32">
+`logits.float()` 这一步不能省。bf16 的有效位数只有 8 位，`log_softmax` 在 bf16 下的数值误差会直接污染 ratio。
+
+代价是这一步的显存会翻倍（float32 的 logits）——这也是上一阶段显存账本里 logits 那一行为什么按 2 份算的原因。
+</Callout>
+
+## 第二步：算优势
+
+```python
+def group_advantages(rewards: torch.Tensor, group_size: int) -> torch.Tensor:
+    """
+    rewards: [B]，其中 B = n_prompts * group_size，同组的样本连续排列
+    返回:     [B]
+    """
+    r = rewards.view(-1, group_size)                    # [n_groups, G]
+
+    mean = r.mean(dim=1, keepdim=True)
+    std = r.std(dim=1, unbiased=False, keepdim=True)     # 总体标准差，除 G
+
+    adv = (r - mean) / (std + 1e-4)
+
+    # 关键：一组全对或全错时 std=0，显式归零，不要让它变成 NaN 或巨大值
+    adv = torch.where(std > 1e-4, adv, torch.zeros_like(adv))
+
+    return adv.view(-1)
+```
+
+三个细节：
+
+1. **`unbiased=False`**：用总体标准差（除 G），和主流实现一致。用 `unbiased=True`（除 G−1）不算错，但和别人的数字对不上。
+2. **`std > 1e-4` 的显式归零**：这是最重要的一行。没有它，全对组会算出 `0 / 1e-4 = 0`（还好），但如果 std 是 1e-8 这种极小值，就会算出巨大的优势值，一步把模型炸掉。
+3. **同组样本必须连续排列**：`view(-1, group_size)` 依赖这个假设。上一节 rollout 返回的顺序天然满足（vLLM 的 `n=G` 会把同一个 prompt 的 G 条放在一起），但如果你中间做了 shuffle，这里就错了。
+
+<Callout type="tip" title="打印验证：优势总和应该恒为 0">
+```python
+adv = group_advantages(rewards, group_size=8)
+print(adv.view(-1, 8).sum(dim=1))   # 每一行都应该接近 0
+```
+
+如果不是 0，说明分组错了（大概率是样本顺序被打乱）。
+</Callout>
+
+## 第三步：ratio
+
+```python
+ratio = torch.exp(logp_new - logp_old)
+```
+
+一行。但有两件事要说清。
+
+**`logp_old` 从哪来？** 是**采样时那个模型**给出的 logprob。两种拿法：
+
+- **方案 A**：采样后立刻用训练模型（此时参数还没更新）跑一次前向，存下来。多一次前向的开销，但准确。
+- **方案 B**：直接用 vLLM 返回的 logprobs。省一次前向，但 vLLM 和 transformers 的数值实现有细微差异，会引入偏差。
+
+<Callout type="note" title="这个「细微差异」工业框架专门处理过">
+TRL 默认开启 **Truncated Importance Sampling**（`vllm_importance_sampling_correction`），slime 有 `--use-tis` 选项，就是在修正「生成引擎与训练引擎的概率不一致」。
+
+手写实现建议用**方案 A**：多花一次前向，换来一个干净的 ratio。等你对齐了再考虑省这一步。
+</Callout>
+
+<Callout type="tip" title="最重要的一个调试检查点">
+**如果每批数据只更新一次**（这是最常见的配置），那么在第一次也是唯一一次前向时，新旧参数完全相同，所以：
+
+```python
+assert torch.allclose(ratio, torch.ones_like(ratio), atol=1e-3), ratio
+```
+
+**ratio 必须恒等于 1。**
+
+这一个断言能同时抓住三类 bug：错一位对齐错了、mask 错了、logp_old 来源不对。**先让这个断言过，再往下写。**
+</Callout>
+
+## 第四步：clip
+
+```python
+def policy_loss(logp_new, logp_old, advantages, mask, eps_low=0.2, eps_high=0.2):
+    """
+    logp_new/old: [B, T]  advantages: [B]  mask: [B, T]
+    """
+    # 序列级优势广播到 token 级：「按序列打分，按 token 求梯度」
+    adv = advantages.unsqueeze(1)                        # [B, 1] → 广播
+
+    ratio = torch.exp(logp_new - logp_old)               # [B, T]
+    clipped = torch.clamp(ratio, 1 - eps_low, 1 + eps_high)
+
+    # min 让它对「好回答提太多」和「坏回答压太狠」都生效
+    per_token = -torch.min(ratio * adv, clipped * adv)   # 负号：要最小化
+
+    # 统计有多少 token 被截断了，作为监控指标
+    with torch.no_grad():
+        clip_frac = (((ratio * adv) > (clipped * adv)).float() * mask).sum() / mask.sum()
+
+    return per_token, clip_frac
+```
+
+`eps_low` 和 `eps_high` 分开是有用的：**非对称 clip**（`eps_high` 比 `eps_low` 大，如 0.2 / 0.28）能鼓励探索，DAPO 提出、slime 的入门配方里就是这么设的。
+
+## 第五步：KL
+
+朴素做法是 `logp_new - logp_ref`，但它的方差很大，而且可能为负（KL 应该恒非负）。用 **k3 估计**：
+
+```python
+def kl_k3(logp_new, logp_ref):
+    """
+    Schulman 的 k3 低方差估计：exp(d) - d - 1，其中 d = logp_ref - logp_new
+    性质：恒非负；期望等于真实 KL；方差远小于朴素差值
+    """
+    d = logp_ref - logp_new
+    return torch.exp(d) - d - 1
+```
+
+<Callout type="note" title="为什么 exp(d) - d - 1 恒非负">
+对任意实数 `d`，有 `exp(d) ≥ d + 1`（指数函数在 `d=0` 处的切线是 `d+1`，而 exp 是凸的，永远在切线之上）。所以 `exp(d) - d - 1 ≥ 0`，且只在 `d = 0` 时取等。
+
+朴素估计 `logp_new - logp_ref` 的期望也是 KL，但单个样本上可以是负数——画出来的曲线会在 0 附近抖动，看不出趋势。
+</Callout>
+
+## 第六步：mask 与归一化 —— 这里有个经典陷阱
+
+把 per-token 的损失汇总成一个标量，有两种做法：
+
+```python
+# 做法 A：per-token 平均（所有 token 平权）
+loss = (per_token * mask).sum() / mask.sum()
+
+# 做法 B：per-sequence 平均（每条序列先内部平均，再对序列平均）
+loss = ((per_token * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)).mean()
+```
+
+**两者不等价**，而且差别有实际后果：
+
+| | 做法 A（token 平权） | 做法 B（序列平权） |
+| --- | --- | --- |
+| 长回答的权重 | **更大**（token 多） | 与短回答相同 |
+| 已知副作用 | 变相鼓励写长 | 长短公平 |
+| 谁在用 | DAPO 推荐（配长度惩罚） | 原始 GRPO 论文 |
+
+<Callout type="trap" title="做法 A 是「长度爆炸」的一个成因">
+如果按 token 平权，一条 500 token 的回答对损失的贡献是 50 token 回答的 10 倍。当长回答恰好 reward 略高时，模型会得到「写长有好处」的信号，然后一路写到 max_tokens。
+
+L4 会讲长度爆炸的完整诊断。这里先记住：**这两种写法要显式选一个，并且知道自己选了哪个。** 框架里通常有个开关（slime 叫 `--calculate-per-token-loss`）。
+
+新手建议先用**做法 B**（序列平权），它的行为更符合直觉。
+</Callout>
+
+## 拼起来
+
+```python
+def grpo_loss(
+    logp_new, logp_old, logp_ref, advantages, mask,
+    eps_low=0.2, eps_high=0.28, beta=0.0,
+):
+    per_token, clip_frac = policy_loss(
+        logp_new, logp_old, advantages, mask, eps_low, eps_high
+    )
+
+    if beta > 0.0 and logp_ref is not None:
+        per_token = per_token + beta * kl_k3(logp_new, logp_ref)
+
+    # 序列平权
+    seq_loss = (per_token * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
+    loss = seq_loss.mean()
+
+    with torch.no_grad():
+        kl = (kl_k3(logp_new, logp_ref) * mask).sum() / mask.sum() \
+             if logp_ref is not None else torch.tensor(0.0)
+
+    return loss, {
+        "loss": loss.item(),
+        "clip_frac": clip_frac.item(),
+        "kl": kl.item(),
+        "adv_std": advantages.std().item(),
+        "ratio_mean": torch.exp(logp_new - logp_old).mean().item(),
+    }
+```
+
+## 逐个中间量检查
+
+写完不要直接开训。按这张表逐项验证：
+
+| 中间量 | 期望值 | 不对说明什么 |
+| --- | --- | --- |
+| `ratio` 初值 | **恒等于 1.0** | 错一位、mask 错、logp_old 来源不对 |
+| 每组 `advantages` 之和 | **0** | 分组错了（样本顺序被打乱） |
+| `advantages` 的量级 | 大致在 −2 ~ +2 | std 归零处理漏了 |
+| `kl` | **≥ 0** | 用了朴素估计，或参考模型加载错了 |
+| `mask.sum()` | 等于 completion 的总 token 数 | mask 覆盖到 prompt 了 |
+| `clip_frac` 首步 | **0** | ratio 不是 1（同上） |
+| `loss` 首步 | 接近 0 | ratio=1 且优势零均值时，min 项相消 |
+
+<Terminal
+  id="verify-grpo"
+  host="rl@forge"
+  cwd="~/rlforge"
+  intro={"算法自检演练。这些检查全部通过之后才能开训。\ngoals 看目标，hint 要提示。"}
+  commands={[
+    {
+      cmd: 'python -m scripts.grpo_scratch.grpo --check-ratio',
+      goal: '确认 ratio 初值恒为 1',
+      hint: '这是最重要的一个检查，能同时抓三类 bug',
+      output: `构造 8 条测试序列，用同一模型算两次 logprob…
+
+ratio.min()  = 0.999997
+ratio.max()  = 1.000003
+ratio.mean() = 1.000000
+allclose(ratio, 1.0, atol=1e-3) → True
+
+✅ 通过。说明错一位对齐正确、mask 正确、logp_old 来源正确。`,
+    },
+    {
+      cmd: 'python -m scripts.grpo_scratch.grpo --check-advantage',
+      goal: '确认优势零均值且退化组被归零',
+      hint: '每组之和应为 0；全对组应该整组为 0',
+      output: `组 0  rewards=[1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+       std=0.484  adv=[+1.03, +1.03, -0.77, -0.77, +1.03, -0.77, -0.77, -0.77]
+       sum=0.000  ✅
+
+组 1  rewards=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+       std=0.000  adv=[0, 0, 0, 0, 0, 0, 0, 0]
+       sum=0.000  ✅ 退化组已归零，没有产生 NaN
+
+组 2  rewards=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+       std=0.000  adv=[0, 0, 0, 0, 0, 0, 0, 0]
+       sum=0.000  ✅
+
+退化组: 2 / 3
+✅ 全部通过`,
+    },
+    {
+      cmd: 'python -m scripts.grpo_scratch.grpo --check-kl',
+      goal: '确认 KL 估计恒非负',
+      hint: 'k3 估计的数学性质：exp(d)-d-1 >= 0 恒成立',
+      output: `随机扰动参考模型，算 1000 个 token 的 KL…
+
+k3 估计    : min=0.000000  mean=0.004182  max=0.061394
+朴素估计    : min=-0.038712 mean=0.004180  max=0.052901
+                  ↑ 出现负值
+
+✅ k3 恒非负，期望与朴素估计一致，但方差小得多。
+   曲线画出来时 k3 是单调可读的，朴素估计在 0 附近抖动看不出趋势。`,
+    },
+    {
+      cmd: 'python -m scripts.grpo_scratch.grpo --check-loss',
+      goal: '确认首步 loss 接近 0、clip_frac 为 0',
+      hint: 'ratio=1 且优势零均值时，min 的两项相等且组内相消',
+      output: `首步指标：
+  loss       = 0.0000012
+  clip_frac  = 0.0000
+  kl         = 0.0000000
+  adv_std    = 1.0328
+  ratio_mean = 1.0000
+  mask.sum() = 5184   (= completion 总 token 数，与 rollout 统计一致)
+
+✅ 全部符合预期。可以开训了。
+
+注：loss 首步接近 0 不代表没有梯度 —— 梯度来自 ratio 对参数的导数，
+    而 ratio 在 1 处的导数不为 0。loss 值小与梯度为 0 是两件事。`,
+    },
+  ]}
+/>
+
+<Quiz
+  id="al-1"
+  question="手写 GRPO 时最有价值的一个调试断言是什么？"
+  options={[
+    { text: '每批只更新一次的配置下，ratio 必须恒等于 1', correct: true },
+    { text: 'loss 必须为正数', feedback: 'loss 的符号不是可靠的检查点，取决于优势的分布。' },
+    { text: 'reward 均值必须大于 0.5', feedback: '这取决于任务难度，不是代码正确性的判据。' },
+    { text: 'advantages 必须全为正', feedback: '恰恰相反：优势零均值，必然有正有负。' },
+  ]}
+  explain={<>
+    ratio = exp(logp_new − logp_old)，同一批只更新一次时新旧参数相同，所以恒为 1。
+    这一个断言能同时抓住错一位、mask 错位、logp_old 来源不对三类 bug。
+  </>}
+/>
+
+<Quiz
+  id="al-2"
+  question="`group_advantages` 里为什么要写 `torch.where(std > 1e-4, adv, 0)`？"
+  options={[
+    { text: '一组全对或全错时 std 接近 0，除法会产生巨大值或 NaN，一步就能把模型炸掉', correct: true },
+    { text: '为了让训练更快', feedback: '这一行是正确性保护，不影响速度。' },
+    { text: '为了让优势总和为 0', feedback: '总和为 0 是减去均值带来的，与这一行无关。' },
+    { text: '因为 PyTorch 不支持除以小数', feedback: 'PyTorch 支持，问题在于结果的数值会失控。' },
+  ]}
+  explain={<>
+    加 <code>eps</code> 只能防止除零报错，防不住「std=1e-8 算出优势 1e8」。
+    必须显式判断并归零 —— 这是手写实现里最常见的一个真 bug。
+  </>}
+/>
+
+<Quiz
+  id="al-3"
+  question="per-token 平均与 per-sequence 平均的损失归一化，差别的实际后果是什么？"
+  options={[
+    { text: 'per-token 平均让长回答权重更大，会变相鼓励写长，是长度爆炸的一个成因', correct: true },
+    { text: '两者数学上等价，只是写法不同', feedback: '不等价。长度不一致时权重分配完全不同。' },
+    { text: 'per-sequence 平均会导致梯度消失', feedback: '不会，它只是让每条序列权重相同。' },
+    { text: '只影响日志里的数值，不影响梯度', feedback: '直接影响梯度：不同的归一化就是不同的损失函数。' },
+  ]}
+  explain={<>
+    500 token 的回答在 token 平权下贡献是 50 token 回答的 10 倍。
+    框架里有对应开关（slime 的 <code>--calculate-per-token-loss</code>）。
+    新手建议先用序列平权，行为更符合直觉。
+  </>}
+/>
+
+## 这节课的落点
+
+- logprob：`logits[:, :-1]` 配 `input_ids[:, 1:]`，`log_softmax` 前转 float32
+- 优势：总体标准差（`unbiased=False`），**std 接近 0 时显式归零**，同组样本必须连续
+- ratio：`logp_old` 建议多跑一次前向拿（方案 A），初值必须恒为 1
+- clip：`torch.min` 让它对两个方向都生效；非对称 eps（0.2/0.28）鼓励探索
+- KL：用 k3 估计 `exp(d)-d-1`，恒非负且方差小
+- 归一化：token 平权 vs 序列平权不等价，显式选一个；新手用序列平权
+- 开训前把七项中间量逐个验证过

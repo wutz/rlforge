@@ -1,0 +1,244 @@
+## 一个报错，能耗掉你一整晚
+
+```
+RuntimeError: CUDA error: no kernel image is available for execution on the device
+```
+
+这是 5090 用户最常见的第一个错误。它的意思不是「显卡坏了」，而是：**你装的这个 PyTorch 里，没有为你这张卡编译过的机器码。**
+
+搞清楚这一件事，能省掉后面所有玄学：
+
+<Callout type="note" title="三个「CUDA 版本」是三件不同的东西">
+1. **驱动版本**（`nvidia-smi` 右上角那个）—— 内核态驱动，决定这台机器最高能支持哪个 CUDA。
+2. **CUDA Toolkit**（`nvcc --version`）—— 编译器和头文件。**只有你要自己编译算子时才用得上**，装 wheel 的人根本不需要它。
+3. **PyTorch 自带的 CUDA runtime**（`torch.version.cuda`）—— pip wheel 里打包的那份。这个才是决定你能不能跑起来的东西。
+
+新手最常犯的错：看到 `nvcc --version` 显示 12.4 就以为环境是 12.4，于是去装 cu124 的 torch。实际上 `nvcc` 完全不参与，要看的是 wheel 自己带的版本。
+</Callout>
+
+## sm_120 是什么
+
+每一代 NVIDIA 架构有一个 compute capability。GPU 上跑的机器码（SASS）是按 capability 编译的，**不通用**。
+
+| 架构 | 代表卡 | Compute Capability | gencode |
+| --- | --- | --- | --- |
+| Ampere | A100 | 8.0 | `sm_80` |
+| Ada | RTX 4090 | 8.9 | `sm_89` |
+| Hopper | H100 / H200 | 9.0 | `sm_90` |
+| Blackwell 数据中心 | B200 / GB200 | 10.0 | `sm_100` |
+| **Blackwell 消费级** | **RTX 5090 / 5080** | **12.0** | **`sm_120`** |
+
+注意最后两行：**B200 和 5090 都叫 Blackwell，但 capability 不一样**。一个库写着「支持 Blackwell」并不等于支持 5090。这是 5090 生态混乱的根源。
+
+要让 5090 跑起来，你的 wheel 必须满足两个条件之一：
+
+- 编译时的 arch list 里包含 `sm_120`（最好的情况，有原生优化的机器码）
+- 或者至少包含 `compute_120`/`+PTX`（退而求其次，运行时 JIT 编译 PTX，第一次调用会卡几秒）
+
+CUDA Toolkit **12.8 是支持 sm_120 的第一个版本**。所以：`torch.version.cuda` 显示 12.6 或更低的 wheel，在 5090 上必定报上面那个错。
+
+## 装环境
+
+用 `uv` 管环境，比 conda 快一个数量级，也不会把 CUDA 库装重。
+
+```bash
+# 1. 确认驱动。要 ≥ 570，Blackwell 建议 580 以上
+nvidia-smi
+
+# 2. 建环境
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv venv --python 3.12 .venv
+source .venv/bin/activate
+
+# 3. 装 PyTorch —— 关键在这一行的 index-url
+#    cu128 是支持 sm_120 的最低档；更高的 cu129 / cu130 同样可以
+uv pip install torch --index-url https://download.pytorch.org/whl/cu128
+
+# 4. 推理引擎与训练库
+uv pip install vllm
+uv pip install "transformers>=4.51" trl peft datasets accelerate
+```
+
+<Callout type="warn" title="装 vLLM 时不要让它顺手换掉你的 torch">
+vLLM 的依赖声明里有 torch，装的时候很可能把你刚装好的 cu128 版本换成 PyPI 上的默认 wheel（那个可能不带 sm_120）。
+
+装完立刻回去跑一遍下面的验证。如果 `get_device_capability()` 变了或者报错，说明 torch 被换掉了 —— 重装一次 torch，或者用 `--no-deps` 单独装 vLLM 再手工补齐它的其它依赖。
+
+**顺序原则：先装 torch，后装其它；每装一个大包，验证一次。**
+</Callout>
+
+## 三条验证命令
+
+装完不要急着跑训练。**依次跑这三条**，任何一条不过就停下来修。
+
+### 第一条：PyTorch 认不认得这张卡
+
+```bash
+python - <<'PY'
+import torch
+print("torch      :", torch.__version__)
+print("cuda (wheel):", torch.version.cuda)
+print("device     :", torch.cuda.get_device_name(0))
+print("capability :", torch.cuda.get_device_capability(0))
+print("arch list  :", torch.cuda.get_arch_list())
+PY
+```
+
+要看到的关键两行：
+
+```
+capability : (12, 0)
+arch list  : [..., 'sm_90', 'sm_100', 'sm_120']
+```
+
+`capability` 是 `(12, 0)` 说明卡认出来了；`arch list` 里有 `sm_120` 说明 wheel 里有对应的机器码。只有 `compute_120` 也能跑，但会有首次 JIT 延迟。
+
+### 第二条：真的算一次
+
+`capability` 打印正常不代表能算 —— 报错往往在第一次真正调用 kernel 时才出现。
+
+```bash
+python - <<'PY'
+import torch
+a = torch.randn(4096, 4096, device="cuda", dtype=torch.bfloat16)
+b = torch.randn(4096, 4096, device="cuda", dtype=torch.bfloat16)
+c = a @ b
+torch.cuda.synchronize()
+print("matmul ok:", c.shape, c.dtype)
+print("peak mem :", torch.cuda.max_memory_allocated() / 1024**3, "GiB")
+PY
+```
+
+这一步过了，PyTorch 侧就算通了。
+
+### 第三条：vLLM 能生成
+
+```bash
+python - <<'PY'
+from vllm import LLM, SamplingParams
+llm = LLM(model="Qwen/Qwen3-0.6B", gpu_memory_utilization=0.5, max_model_len=2048)
+out = llm.generate(["1+1=?"], SamplingParams(max_tokens=32, temperature=0))
+print(out[0].outputs[0].text)
+PY
+```
+
+能打出文字，环境就通了。
+
+<Terminal
+  id="verify-env"
+  host="rl@forge"
+  cwd="~/rlforge"
+  intro={"环境验证演练。按上面三条的顺序敲，看到输出后判断它说明了什么。\n输入 goals 看目标，hint 要提示。"}
+  commands={[
+    {
+      cmd: 'nvidia-smi',
+      goal: '确认驱动版本与显存规格',
+      hint: '第一步永远是看驱动认不认这张卡',
+      output: `Tue Aug 19 10:12:44 2026
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 580.65.06              Driver Version: 580.65.06      CUDA Version: 13.0     |
+|-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A |         Memory-Usage |
+|   0  NVIDIA GeForce RTX 5090      Off   | 00000000:01:00.0 Off   |    1MiB / 32607MiB   |
++-----------------------------------------+------------------------+----------------------+
+
+读法：驱动 580 够新；右上角 CUDA 13.0 是「驱动最高支持到 13.0」，
+不是「已装 Toolkit 13.0」—— 这一栏经常被误读。
+显存 32607MiB ≈ 31.8 GiB 可用，不是整 32。`,
+    },
+    {
+      cmd: 'python -c "import torch; print(torch.cuda.get_device_capability(0), torch.cuda.get_arch_list())"',
+      aliases: ['python -c "import torch; print(torch.cuda.get_device_capability(0))"'],
+      goal: '确认 PyTorch 编译时包含 sm_120',
+      hint: 'capability 要是 (12, 0)，arch list 里要有 sm_120',
+      output: `(12, 0) ['sm_75', 'sm_80', 'sm_86', 'sm_90', 'sm_100', 'sm_120']
+
+✅ capability (12, 0) —— 卡被正确识别为 Blackwell 消费级
+✅ arch list 含 sm_120 —— 有原生机器码，不需要 JIT`,
+    },
+    {
+      cmd: 'python bench/matmul.py',
+      goal: '真的跑一次 kernel，确认不是「装上了但算不了」',
+      hint: '打印正常 ≠ 能算，要真的做一次 bf16 matmul',
+      output: `matmul ok: torch.Size([4096, 4096]) torch.bfloat16
+peak mem : 0.19 GiB
+
+✅ kernel 真的执行了。到这一步 PyTorch 侧就算通了。`,
+    },
+    {
+      cmd: 'python bench/vllm_smoke.py',
+      goal: '确认 vLLM 能加载模型并生成',
+      hint: '最后一关：推理引擎。它的算子比 PyTorch 更挑架构',
+      output: `INFO  Using Flash Attention backend
+INFO  Capturing CUDA graphs: 100%|██████████| 35/35
+INFO  init engine took 24.31 s
+1+1=2
+
+✅ CUDA graph 捕获成功 —— 这条尤其值得看，
+   很多 5090 教程让你加 --enforce-eager 绕过它，那会牺牲几倍吞吐。
+   能捕获就别关。`,
+    },
+  ]}
+/>
+
+## 错误对照表
+
+| 报错 | 真实原因 | 怎么修 |
+| --- | --- | --- |
+| `no kernel image is available` | wheel 里没有 sm_120 | 换 cu128 及以上的 torch wheel |
+| `PTX was compiled with an unsupported toolchain` | 驱动比 wheel 的 CUDA 版本旧 | 升驱动，不要降 torch |
+| `CUDA capability sm_120 is not compatible` | 库自己的 arch 白名单没更新 | 升级那个库；或用 `TORCH_CUDA_ARCH_LIST="12.0+PTX"` 自己编 |
+| `flash_attn` 编译失败 | 预编译轮子没有 sm_120 版本 | 别硬编。vLLM 自带的 attention 后端已经够用 |
+| 训练几秒后段错误，无 Python traceback | 单卡启用了 DDP | 单卡不要 `torchrun`，不要 `accelerate launch --multi_gpu` |
+| 显存明显不够但模型很小 | 别的进程占着卡 | `nvidia-smi` 看进程，杀掉残留的 python |
+
+<Callout type="trap" title="单卡千万不要开 DDP">
+有人在 5090 上遇到「推理正常，训练几秒后崩溃、没有任何 Python 报错」，排查很久最后发现是 DDP。
+
+单卡场景下 DDP 不但没有任何收益，还会引入 NCCL 通信路径。直接 `python train.py` 就好 —— 不要 `torchrun`，不要 `accelerate launch --multi_gpu`。
+</Callout>
+
+<Callout type="gpu" title="原生 Linux 优先于 WSL2">
+WSL2 能跑，但有两个实际代价：整体性能大约是原生的七成；FP8 相关的部分能力受 Windows 显示驱动层限制，行为和原生不一致。
+
+要长时间跑训练，装个原生 Ubuntu。要只是跟着读、偶尔跑小实验，WSL2 够用。
+</Callout>
+
+<Quiz
+  id="tc-1"
+  question="`nvcc --version` 显示 CUDA 12.4，但 `torch.version.cuda` 显示 12.8。在 5090 上能跑吗？"
+  options={[
+    { text: '能。装 wheel 时 nvcc 不参与，起作用的是 wheel 自带的 CUDA runtime', correct: true },
+    { text: '不能，两者必须一致', feedback: '只有自己从源码编译算子时才需要一致。装预编译 wheel 时 nvcc 完全不参与。' },
+    { text: '不能，要把 Toolkit 升到 12.8', feedback: '不需要。除非你要自己编译 flash-attn 之类的扩展。' },
+    { text: '看运气', feedback: '这里没有运气成分，规则是确定的。' },
+  ]}
+  explain={<>
+    要看的三个数：驱动版本（够新就行）、<code>torch.version.cuda</code>（≥12.8）、
+    <code>torch.cuda.get_arch_list()</code>（含 sm_120）。<code>nvcc</code> 不在其中。
+  </>}
+/>
+
+<Quiz
+  id="tc-2"
+  question="装完 vLLM 后 `no kernel image is available` 又出现了，最可能的原因是什么？"
+  options={[
+    { text: 'vLLM 的依赖解析把 cu128 的 torch 换成了不带 sm_120 的默认 wheel', correct: true },
+    { text: '显卡过热降频', feedback: '降频只影响速度，不会导致找不到 kernel。' },
+    { text: 'vLLM 不支持 5090', feedback: 'vLLM 支持 sm_120。这里是依赖被换掉的问题。' },
+    { text: '要重装驱动', feedback: '之前验证过驱动是好的，装个 Python 包不会动到驱动。' },
+  ]}
+  explain={<>
+    这是 5090 环境最常见的返工点。规矩：<strong>先装 torch，后装其它；每装一个大包，重跑一次验证。</strong>
+    发现被换掉就重装 torch，或用 <code>--no-deps</code> 装 vLLM。
+  </>}
+/>
+
+## 这节课的落点
+
+- `no kernel image` = wheel 里没有 sm_120，不是硬件问题
+- 三个 CUDA 版本要分清：驱动 / Toolkit / wheel 自带 runtime，起作用的是第三个
+- 5090 是 sm_120，与 B200 的 sm_100 不同；「支持 Blackwell」不等于支持 5090
+- CUDA 12.8 是支持 sm_120 的起点，torch 要装 cu128 及以上
+- 三条验证：capability、真做一次 matmul、vLLM 生成一次
+- 单卡不开 DDP；CUDA graph 能捕获就别用 `--enforce-eager` 关掉

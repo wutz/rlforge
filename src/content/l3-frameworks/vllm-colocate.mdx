@@ -1,0 +1,306 @@
+## 两种模式
+
+RL 训练需要一个推理引擎持续产出数据。它和训练进程的关系有两种安排：
+
+```
+server 模式（多卡）
+┌────────────┐   HTTP   ┌────────────┐
+│  训练进程   │ ──────→ │ vLLM 服务   │
+│  卡 4-7    │ ←────── │  卡 0-3     │
+└────────────┘          └────────────┘
+两边同时工作，采样和训练可以重叠
+
+colocate 模式（单卡）
+┌──────────────────────────────┐
+│      同一张卡，交替执行         │
+│  采样 ████    训练 ████        │
+│      ████        ████         │
+└──────────────────────────────┘
+一个时刻只有一件事在跑
+```
+
+| | server | colocate |
+| --- | --- | --- |
+| 卡数要求 | ≥2 | 1 张就行 |
+| 采样与训练 | **可以重叠** | 严格交替 |
+| 通信 | HTTP / RPC | 显存内 |
+| 权重同步 | 跨进程，要序列化 | 显存拷贝，快 |
+| 速度 | 快 | **明显慢** |
+
+**单卡只能用 colocate。** 这不是配置选择，是物理约束——一张卡不可能同时跑训练 kernel 和生成 kernel。
+
+<Callout type="gpu" title="colocate 慢多少">
+慢在两处：
+
+1. **不能重叠**。server 模式下采样和训练并行，单步墙钟时间约等于 `max(采样, 训练)`；colocate 是 `采样 + 训练`。
+2. **切换开销**。每轮要 sleep/wake，显存释放和重新申请要几秒。
+
+按 L2 那次实测：采样 30s + 训练 12s + 切换 3s = 45s。如果能重叠，理想情况是 30s。**colocate 的代价大约是 1.5 倍。**
+
+单卡上这不是取舍，是唯一选项。接受它，然后优化能优化的部分。
+</Callout>
+
+## 核心参数：显存怎么划
+
+`vllm_gpu_memory_utilization`（slime 里叫 `--sglang-mem-fraction-static`）决定给 vLLM 多少。
+
+关键认知：**这是预先占用，不是按需申请。** vLLM 启动时就把这个比例的显存吃掉，用来放权重和 KV cache 池。
+
+所以单卡上你必须手工划一条线：
+
+```
+32 GiB
+├── vLLM        util × 32     ← 你划的
+└── 训练侧      剩下的
+```
+
+怎么定这条线？用 L0 的显存计算器：
+
+1. 算出训练侧需要多少（权重 + 梯度 + 优化器 + 激活 + logits）
+2. 留 1.5 GiB 给 CUDA context 和碎片
+3. 剩下的除以 32，就是 util 的上限
+4. 从这个上限往下减 5%，作为起始值
+
+以 0.6B 全参为例：
+
+```
+训练侧 ≈ 10.4 GiB   (权重1.1 + 梯度1.1 + AdamW6.7 + 激活0.2 + logits1.2)
+context ≈ 1.5 GiB
+────────────────────
+可给 vLLM ≈ 32 − 10.4 − 1.5 = 20 GiB  →  util 上限 ≈ 0.62
+起始值取 0.55
+```
+
+<Callout type="warn" title="但实践上建议从 0.3 起步">
+上面算出 0.55 是理论上限。实际先用 0.3 跑通，确认不 OOM，再往上加。
+
+原因：算得再准也会漏掉一些东西（allocator 碎片、kernel workspace、临时张量）。**先跑通再优化，比先优化再 debug OOM 省时间得多。**
+</Callout>
+
+## sleep mode：把显存借来借去
+
+vLLM 的 sleep mode 是 colocate 能舒服工作的关键：
+
+```python
+engine = LLM(..., enable_sleep_mode=True)
+
+engine.wake_up()      # 采样前：申请 KV cache
+samples = rollout(...)
+engine.sleep(level=1) # 采样后：归还 KV cache 显存
+# ↓ 这段时间训练侧可以用这块显存
+train_step(...)
+```
+
+两个 level：
+
+| level | 释放什么 | 唤醒耗时 | 用在哪 |
+| --- | --- | --- | --- |
+| 1 | 只释放 KV cache，权重留着 | 快（1~3s） | ✅ 单卡 colocate 默认 |
+| 2 | 权重也卸载到 CPU | 慢（10s+） | 显存极度紧张时 |
+
+TRL 里对应 `vllm_enable_sleep_mode=True`（部分版本），Axolotl 的文档也推荐开启。
+
+<Callout type="tip" title="sleep mode 让 util 可以设得更高">
+不开 sleep mode：vLLM 全程占着 util × 32，训练侧只能用剩下的。
+开了 sleep mode：训练阶段那部分 KV cache 显存能借给训练侧用。
+
+**等价于让你把 util 设得比理论上限更高**，因为两边不再同时峰值。这是单卡 colocate 最实用的一个开关。
+</Callout>
+
+## OOM 排查顺序
+
+colocate 下 OOM 有两种，先分清是哪一种：
+
+```
+报错发生在 采样阶段  →  vLLM 侧不够   →  降 max_model_len / 降并发 / 提 util
+报错发生在 训练阶段  →  训练侧不够     →  降 micro batch / 降 util / 开检查点
+```
+
+看 traceback 里出现的是 vLLM 的栈还是 transformers 的栈就能区分。
+
+然后按这个顺序动，**一次只动一个**：
+
+| 顺序 | 动作 | 影响效果吗 |
+| --- | --- | --- |
+| 1 | micro batch 降到 1 + 梯度累积补回 | ❌ 不影响，数学等价 |
+| 2 | 开 `gradient_checkpointing` | ❌ 不影响，只是慢 30% |
+| 3 | 开 `enable_sleep_mode` | ❌ 不影响 |
+| 4 | 降 `max_model_len` 到实际需要 | ❌ 只要不低于真实最大长度 |
+| 5 | 调整 util（哪边不够给哪边） | ❌ 只影响速度 |
+| 6 | 降 rollout 并发 | ⚠️ 只影响速度，但会明显变慢 |
+| 7 | 降 `max_completion_length` | ⚠️ **可能影响效果** |
+| 8 | 降 `num_generations` | ⚠️ **影响优势估计质量** |
+| 9 | 关参考模型（beta=0） | ⚠️ 失去 KL 约束和监控 |
+| 10 | 换 LoRA | ⚠️ 表达能力受限 |
+
+<Callout type="trap" title="不要先动 num_generations">
+`num_generations` 是新手最容易先降的，因为它看起来直接减少了工作量。
+
+但 G 是 GRPO 的基线来源。G 从 8 降到 4，组内基线的估计方差显著增大，**退化组（std=0）的比例也会上升**。一般不要低于 4。
+
+前六项都不影响效果，先把它们用完。
+</Callout>
+
+## 时间去哪了
+
+记一次实测的分解（0.6B、8 prompt × 8 条、平均 152 token）：
+
+```
+采样            28.4 s   62%   ████████████████████████
+前向 + 反向     12.1 s   26%   ██████████
+权重同步         2.2 s    5%   ██
+sleep/wake      3.1 s    7%   ███
+─────────────────────────────
+单步            45.8 s
+```
+
+结论很清楚：**优化的重点在采样。**
+
+按性价比排序的四个动作：
+
+1. **提高 util**（如果显存允许）—— KV cache 池更大，能容纳更多并发，吞吐直接上去
+2. **降 `max_completion_length`** —— 采样时间对长度基本是线性的。但要先确认截断率不高
+3. **确认 CUDA graph 开着** —— 关掉能损失几倍吞吐
+4. **减小固定开销的占比** —— 每步 batch 调大，让同步和切换的 5 秒摊薄
+
+<Callout type="note" title="第 4 点值得多说一句">
+同步 + 切换固定 5.3 秒，占单步 12%。如果把每步的 prompt 数从 8 加到 16（采样时间翻倍到 57s），固定开销的占比就从 12% 降到 7%。
+
+代价是每步显存峰值更高，而且更新频率降低。**这是「大 batch 少步数」和「小 batch 多步数」的经典权衡**，在 colocate 下前者更划算，因为固定开销更大。
+</Callout>
+
+<Terminal
+  id="colocate-tune"
+  host="rl@forge"
+  cwd="~/rlforge"
+  intro={"colocate 调优演练。目标是在不 OOM 的前提下把单步时间压下来。\ngoals 看目标，hint 要提示。"}
+  commands={[
+    {
+      cmd: 'python -m scripts.trl_grpo.train --util 0.7 --max-steps 2',
+      goal: '看 util 给太高时 OOM 发生在哪一侧',
+      hint: '故意设太高，学会读 traceback 判断是哪边不够',
+      output: `Initializing vLLM (colocate, util=0.70)...
+INFO  # GPU blocks: 37120
+INFO  Capturing CUDA graphs: 100%|██████████| 35/35
+Generating: 100%|██████████| 8/8
+
+Traceback (most recent call last):
+  File "trl/trainer/grpo_trainer.py", line ..., in _compute_loss
+    logits = model(input_ids=..., attention_mask=...).logits
+  File "transformers/models/qwen3/modeling_qwen3.py", line ...
+torch.OutOfMemoryError: CUDA out of memory.
+Tried to allocate 1.19 GiB. GPU 0 has a total capacity of 31.84 GiB
+of which 0.62 GiB is free. Process has 22.31 GiB reserved by vLLM.
+
+诊断：
+· traceback 在 transformers 的 modeling 里 → 训练侧不够
+· "22.31 GiB reserved by vLLM" → vLLM 吃太多了
+· 采样阶段成功跑完 → vLLM 侧是够的
+
+结论：util 给多了，往下调。`,
+    },
+    {
+      cmd: 'python -m scripts.trl_grpo.train --util 0.3 --max-steps 2 --profile',
+      goal: '拿到单步时间分解，确认瓶颈在采样',
+      hint: '不知道时间花在哪，优化就是瞎猜',
+      output: `step 0 时间分解:
+  wake_up              1.4 s
+  generate            28.4 s   ← 62%
+  reward               0.2 s
+  logp_old forward     3.8 s
+  forward + backward  12.1 s   ← 26%
+  optimizer step       0.3 s
+  sleep                1.7 s
+  weight sync          2.2 s
+  ─────────────────────────
+  total               50.1 s
+
+峰值显存: 20.9 GiB / 31.8 GiB   （还剩 10.9 GiB）
+
+诊断：
+· 采样占 62%，是明确的瓶颈
+· 显存剩 10.9 GiB —— util 0.3 给得太保守了
+· 下一步：把 util 提上去，让 KV cache 池变大`,
+    },
+    {
+      cmd: 'python -m scripts.trl_grpo.train --util 0.5 --sleep-mode --max-steps 2 --profile',
+      goal: '提高 util 并开 sleep mode，看单步时间下降多少',
+      hint: 'sleep mode 让训练阶段能借用 KV cache 那块显存',
+      output: `step 0 时间分解:
+  wake_up              2.1 s
+  generate            17.6 s   ← 从 28.4 降到 17.6
+  reward               0.2 s
+  logp_old forward     3.8 s
+  forward + backward  12.1 s
+  optimizer step       0.3 s
+  sleep                2.4 s
+  weight sync          2.2 s
+  ─────────────────────────
+  total               40.7 s   ← 从 50.1 降到 40.7（快 19%）
+
+峰值显存: 28.6 GiB / 31.8 GiB   （余量 3.2 GiB，偏紧但可接受）
+
+读法：
+✅ KV cache 池从 15904 块涨到 26496 块，并发上去了，采样快了 38%
+✅ sleep mode 让训练阶段能用回那块显存，所以 util 0.5 也没 OOM
+⚠️ 余量只剩 3.2 GiB —— 再往上加就危险了，
+   而且长回答出现时峰值会更高。0.5 是这个配置的实用上限。
+⚠️ 切换开销从 3.1s 涨到 4.5s（显存进出更多）—— 但净收益仍然为正`,
+    },
+  ]}
+/>
+
+<Quiz
+  id="co-1"
+  question="为什么单卡只能用 colocate 模式？"
+  options={[
+    { text: '一张卡不可能同时执行训练 kernel 和生成 kernel，采样与训练无法重叠', correct: true },
+    { text: '因为 server 模式需要额外的网络配置', feedback: 'server 模式在单机上也能走本地 HTTP，配置不是障碍。真正的障碍是没有第二组卡。' },
+    { text: '因为 vLLM 不支持单卡 server 模式', feedback: 'vLLM 单卡完全可以起 server。问题是那样训练进程就没卡用了。' },
+    { text: '因为 colocate 更快', feedback: '恰恰相反，colocate 明显更慢，大约 1.5 倍。' },
+  ]}
+  explain={<>
+    server 模式的价值在于<strong>采样与训练重叠</strong>，而重叠需要两组卡。
+    单卡上这是物理约束，不是配置选择。
+  </>}
+/>
+
+<Quiz
+  id="co-2"
+  question="colocate 下 OOM，traceback 出现在 transformers 的 modeling 文件里。该先动什么？"
+  options={[
+    { text: '训练侧不够：降 micro batch、开梯度检查点，或把 util 调低给训练侧腾地方', correct: true },
+    { text: '提高 vllm_gpu_memory_utilization', feedback: '方向反了 —— 提高 util 会让 vLLM 占更多，训练侧更不够。' },
+    { text: '降 num_generations', feedback: '这会影响优势估计质量，应该放到最后再考虑。前面还有好几刀不影响效果。' },
+    { text: '换更小的模型', feedback: '这是最后一招，而且没有解决问题只是换了问题。' },
+  ]}
+  explain={<>
+    先看 traceback 在哪一侧：vLLM 的栈 = 采样侧不够；transformers 的栈 = 训练侧不够。
+    然后按「不影响效果」的顺序动：micro batch → 检查点 → sleep mode → max_model_len → util。
+  </>}
+/>
+
+<Quiz
+  id="co-3"
+  question="sleep mode（level=1）的作用是什么？"
+  options={[
+    { text: '训练阶段把 KV cache 占的显存归还，训练侧可以用；下轮采样再申请回来', correct: true },
+    { text: '把模型权重卸载到 CPU 内存', feedback: '那是 level=2。level=1 只释放 KV cache，权重留在显存里。' },
+    { text: '暂停训练进程以降低功耗', feedback: '与功耗无关，是显存管理机制。' },
+    { text: '把 vLLM 的进程杀掉再重启', feedback: '不重启进程，所以唤醒只要几秒而不是几十秒。' },
+  ]}
+  explain={<>
+    它的实际效果是<strong>让 util 可以设得比理论上限更高</strong> —— 因为采样峰值和训练峰值不再同时出现。
+    这是单卡 colocate 最实用的一个开关。
+  </>}
+/>
+
+## 这节课的落点
+
+- 单卡只能 colocate，代价约 1.5 倍（不能重叠 + 切换开销），这是物理约束
+- `vllm_gpu_memory_utilization` 是**预占**不是按需，必须手工划线
+- 理论上限用显存计算器算，但**实践从 0.3 起步**，跑通再往上加
+- sleep mode level=1 归还 KV cache 显存，等价于让 util 能设得更高
+- OOM 先看 traceback 在哪一侧，再按「不影响效果」的顺序动刀
+- 不要先降 `num_generations`，它是 GRPO 的基线来源，一般不低于 4
+- 采样占 60%+，优化重点：提 util、控长度、保住 CUDA graph、摊薄固定开销

@@ -1,0 +1,351 @@
+## 为什么单卡框架层选 TRL
+
+这条路径参考的两个工业框架都跑不了单卡（slime 最小 8×H100，Miles 的硬件列表是 A100/H100/B200/MI300 系列）。所以框架层实跑用 **TRL**：
+
+| 候选 | 单卡 32GB 可行性 |
+| --- | --- |
+| **TRL** | ✅ 装得上、支持 colocate、文档跟得上 |
+| Unsloth | ✅ 也可以，显存更省，但封装更厚 |
+| verl | ⚠️ 官方入门是单卡 24GB 的 notebook，但整体为多卡设计，容易和 OOM 搏斗 |
+| slime / Miles | ❌ Megatron + 多卡并行，单卡无从下手 |
+
+选 TRL 的关键理由是**它的抽象层次刚好**：`GRPOTrainer` 帮你管住训练循环和 vLLM 协作，但 reward 函数还是你自己写的普通 Python。你 L2 写的 `rewards.py` 可以原样接进来。
+
+## 最小可跑脚本
+
+```python
+# scripts/trl_grpo/train.py
+from datasets import load_dataset
+from trl import GRPOConfig, GRPOTrainer
+
+from scripts.grpo_scratch.rewards import correctness_reward, format_reward
+
+MODEL = "./models/Qwen3-0.6B"
+
+
+# ---------- reward：签名是固定的 ----------
+def reward_correct(completions, answer, **kwargs):
+    """
+    completions: list[str]，本批所有生成
+    answer:      list[str]，数据集里同名列会自动按批传进来
+    返回:         list[float]，长度与 completions 一致
+    """
+    return [correctness_reward(c, a) for c, a in zip(completions, answer)]
+
+
+def reward_format(completions, **kwargs):
+    return [format_reward(c) for c in completions]
+
+
+def main():
+    ds = load_dataset("openai/gsm8k", "main", split="train")
+
+    def prep(row):
+        # prompt 列会被自动套 chat template
+        return {
+            "prompt": [{"role": "user", "content": row["question"]}],
+            "answer": row["answer"].split("####")[-1].strip(),
+        }
+
+    ds = ds.map(prep, remove_columns=ds.column_names)
+
+    cfg = GRPOConfig(
+        output_dir="out/trl-grpo-01",
+
+        # ---- 对应你手写脚本里的变量 ----
+        num_generations=8,              # ← GROUP_SIZE
+        per_device_train_batch_size=8,  # ← PROMPTS_PER_STEP（见下方说明）
+        gradient_accumulation_steps=4,
+        max_completion_length=512,      # ← max_tokens
+        max_prompt_length=256,
+        temperature=1.0,
+        top_p=1.0,
+        beta=0.0,                       # ← KL 系数
+        epsilon=0.2,                    # ← clip 下界
+        epsilon_high=0.28,              # ← clip 上界（非对称）
+        learning_rate=1e-6,
+        adam_beta2=0.98,
+        max_grad_norm=1.0,
+        max_steps=200,
+
+        # ---- 单卡 colocate ----
+        use_vllm=True,
+        vllm_mode="colocate",
+        vllm_gpu_memory_utilization=0.30,
+
+        # ---- 显存 ----
+        bf16=True,
+        gradient_checkpointing=True,
+
+        # ---- 日志 ----
+        logging_steps=1,
+        save_steps=20,
+        report_to="none",               # 想接 wandb 就改这里
+    )
+
+    trainer = GRPOTrainer(
+        model=MODEL,
+        args=cfg,
+        train_dataset=ds,
+        reward_funcs=[reward_correct, reward_format],
+        reward_weights=[1.0, 1.0],      # 权重原则同 L2：便宜的分给得少
+    )
+    trainer.train()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+<Callout type="warn" title="启动前务必核对你装的 TRL 版本文档">
+TRL 迭代很快，`vllm_mode` 的默认值、参数名、reward 函数签名在不同版本间都变过。**以你装的那个版本的文档为准**，不要照抄任何博客（包括这一页）。
+
+```bash
+python -c "import trl; print(trl.__version__)"
+python -c "from trl import GRPOConfig; import inspect; print(inspect.signature(GRPOConfig.__init__))"
+```
+
+第二条命令直接打出你这个版本真实接受的参数，比查文档快。
+</Callout>
+
+## 参数对照表
+
+这张表是这一节的核心。左边是你 L2 亲手写的，右边是 TRL 的名字：
+
+| 你的变量 | TRL 参数 | 说明 |
+| --- | --- | --- |
+| `GROUP_SIZE` | `num_generations` | 一个 prompt 采几条 |
+| `PROMPTS_PER_STEP` | `per_device_train_batch_size` | ⚠️ 语义不同，见下 |
+| `MICRO_BATCH` | 由前两者和累积步数推出 | TRL 自己算 |
+| — | `gradient_accumulation_steps` | 梯度累积 |
+| `BETA` | `beta` | KL 系数 |
+| `eps_low` / `eps_high` | `epsilon` / `epsilon_high` | clip 阈值 |
+| `max_tokens` | `max_completion_length` | 生成上限 |
+| `temperature` | `temperature` | 采样温度 |
+| `util=0.30` | `vllm_gpu_memory_utilization` | 给 vLLM 的显存 |
+| `sync_weights_to_vllm()` | 自动 | TRL 每步替你做 |
+| `engine.sleep()` | `vllm_enable_sleep_mode` | 部分版本有此项 |
+| `logp_old` 那次前向 | 自动 | 内部处理 |
+| 序列/token 平权 | `loss_type` | 默认值随版本变，查一下 |
+
+<Callout type="trap" title="per_device_train_batch_size 的语义陷阱">
+在 TRL 的 GRPO 里，这个参数指的是**生成序列的条数**，而不是 prompt 的个数。而且它必须能被 `num_generations` 整除。
+
+也就是说 `per_device_train_batch_size=8` 配 `num_generations=8`，一步只处理 **1 个 prompt** 的 8 条生成。
+
+想要「8 个 prompt × 8 条」，需要让 `per_device_train_batch_size × gradient_accumulation_steps = 64`。
+
+这个语义差异是接框架时最容易算错 batch 的地方。**跑起来后核对日志里的实际样本数**，别凭参数名猜。
+</Callout>
+
+## 接自己的 reward
+
+TRL 的 reward 函数约定：
+
+```python
+def my_reward(completions, **kwargs) -> list[float]:
+    ...
+```
+
+三条规则：
+
+1. **`completions` 是本批所有生成的文本列表**（不是单条）
+2. **返回列表长度必须与 `completions` 一致**
+3. **数据集里的其它列会按名字通过 `kwargs` 传进来** —— 上面 `answer=...` 就是这么拿到的
+
+多个 reward 函数用 `reward_weights` 加权求和，等价于你 L2 里的 `total_reward`。
+
+<Callout type="tip" title="reward 函数不要抛异常">
+一条生成里出现意外格式，如果你的 reward 抛了异常，整个训练就停了。
+
+在函数最外层套一个 try/except，出错返回 0.0 并打日志：
+
+```python
+def reward_correct(completions, answer, **kwargs):
+    out = []
+    for c, a in zip(completions, answer):
+        try:
+            out.append(correctness_reward(c, a))
+        except Exception as e:
+            print(f"[reward] 跳过一条：{e}")
+            out.append(0.0)
+    return out
+```
+
+L2 的手写脚本里也该这么写。
+</Callout>
+
+## 跑起来，和 L2 的曲线放一起比
+
+```bash
+python -m scripts.trl_grpo.train 2>&1 | tee logs/trl-01.log
+```
+
+<Terminal
+  id="trl-run"
+  host="rl@forge"
+  cwd="~/rlforge"
+  intro={"TRL 实跑演练。重点是把它的指标和你 L2 的曲线对上。\ngoals 看目标，hint 要提示。"}
+  commands={[
+    {
+      cmd: 'python -c "from trl import GRPOConfig; import inspect; print(inspect.signature(GRPOConfig.__init__))"',
+      goal: '确认你这个版本真实接受哪些参数',
+      hint: '别照抄博客，直接问代码',
+      output: `(self, output_dir=None, ..., num_generations: int = 8,
+ max_completion_length: int = 256, max_prompt_length: int = 512,
+ temperature: float = 1.0, top_p: float = 1.0,
+ beta: float = 0.0, epsilon: float = 0.2, epsilon_high: float | None = None,
+ loss_type: str = 'dapo', scale_rewards: str = 'group',
+ use_vllm: bool = False, vllm_mode: str = 'colocate',
+ vllm_gpu_memory_utilization: float = 0.3,
+ vllm_importance_sampling_correction: bool = True, ...)
+
+读法：
+· vllm_mode 默认已经是 colocate —— 单卡正好
+· beta 默认 0.0 —— 和现代配方一致，KL 不进损失
+· loss_type='dapo' —— 注意这是 token 平权那一系，
+  与你 L2 用的序列平权不同，两边曲线会有差异（尤其长度）
+· vllm_importance_sampling_correction 默认开 —— 就是 L2 提到的
+  「修正 vLLM 与 transformers 的概率差」`,
+    },
+    {
+      cmd: 'python -m scripts.trl_grpo.train --max-steps 10',
+      goal: '冒烟测试：确认能跑、显存够、指标合理',
+      hint: '和手写脚本一样，先 10 步',
+      output: `Loading model...
+Initializing vLLM (colocate, util=0.30)...
+INFO  # GPU blocks: 15904
+INFO  Capturing CUDA graphs: 100%|██████████| 35/35
+
+{'loss': 0.0000, 'reward': 0.4180, 'reward_std': 0.4712,
+ 'completions/mean_length': 79.4, 'completions/clipped_ratio': 0.043,
+ 'kl': 0.0, 'clip_ratio/region_mean': 0.0000, 'epoch': 0.01}
+{'loss': 0.0021, 'reward': 0.4336, 'reward_std': 0.4680, ...}
+...
+{'loss': 0.0089, 'reward': 0.4805, 'reward_std': 0.4602,
+ 'completions/mean_length': 86.1, 'completions/clipped_ratio': 0.051,
+ 'kl': 0.0, 'clip_ratio/region_mean': 0.0134, 'epoch': 0.05}
+
+峰值显存: 20.9 GiB / 31.8 GiB
+
+指标对照（TRL 名字 → 你的名字）：
+  reward                      → reward
+  reward_std                  → 与 adv_std 相关（归一化前）
+  completions/mean_length     → len
+  completions/clipped_ratio   → trunc（被 max_tokens 截断的比例）
+  clip_ratio/region_mean      → clip_frac
+  kl                          → kl
+
+✅ 起点 reward 0.418 与手写脚本的 0.412 基本一致 —— 说明两边任务和 reward 对齐了`,
+    },
+    {
+      cmd: 'python -m scripts.trl_grpo.train --max-steps 200',
+      goal: '跑完 200 步，与 L2 的结果对比',
+      hint: '关注终点 acc 和长度曲线的差异',
+      output: `step  20  reward=0.5402  len=94.2   clip_ratio=0.019
+step  60  reward=0.6931  len=131.5  clip_ratio=0.027
+step 120  reward=0.8054  len=168.3  clip_ratio=0.034
+step 200  reward=0.8612  len=203.7  clip_ratio=0.039
+
+评测 (GSM8K test 1319 题, greedy):
+  训练前  : 20.8%
+  手写 L2 : 57.9%
+  TRL     : 59.1%
+
+耗时: TRL 2h08m  /  手写 1h52m
+
+对比读法：
+✅ 终点分数基本一致（57.9% vs 59.1%），说明你的手写实现是对的
+⚠️ 平均长度差异明显：手写 152，TRL 204
+   原因：TRL 默认 loss_type='dapo'（token 平权），
+   而你 L2 用的是序列平权。token 平权会给长回答更大权重，
+   于是长度涨得更快 —— 这正是 L2 那节讲过的那个陷阱。
+   把 loss_type 换成序列平权那一档，长度曲线就会贴近手写版。
+⚠️ TRL 略慢：框架有额外的数据处理和检查开销，这是抽象的代价`,
+    },
+  ]}
+/>
+
+## 分数对不上时先看哪三个地方
+
+如果 TRL 的结果和你手写版差很多，按这个顺序查：
+
+### 一、batch 语义
+
+`per_device_train_batch_size` 是**序列条数**不是 prompt 数。算错会导致实际 batch 差好几倍，而 batch 大小直接影响梯度噪声。
+
+查法：看日志里 `epoch` 的推进速度，或直接打印每步的实际样本数。
+
+### 二、loss_type（序列平权 vs token 平权）
+
+这是上面演示里出现的差异来源。两者不等价，长度曲线会明显不同。
+
+查法：`print(cfg.loss_type)`，和你手写实现里的归一化方式对齐。
+
+### 三、importance sampling 修正
+
+TRL 默认开 `vllm_importance_sampling_correction`，它在修正 vLLM 与 transformers 的概率差异。你手写版（如果用的是「多跑一次前向拿 logp_old」的方案 A）不需要这个修正，两边的 ratio 分布会有细微不同。
+
+查法：把它关掉再跑一次对比。
+
+<Callout type="note" title="其它常见对不齐来源">
+- **chat template**：TRL 自动套模板，你手写时是手动套的。打印出来逐字符比较。
+- **答案抽取**：GSM8K 的 `answer` 列包含完整解题过程，`####` 之后才是答案。两边都要正确切分。
+- **随机种子**：`seed` 不同时单次结果会有几个百分点波动。比较趋势不要比较单点。
+</Callout>
+
+<Quiz
+  id="trl-1"
+  question="TRL GRPO 里 `per_device_train_batch_size=8` 配 `num_generations=8`，一步处理几个 prompt？"
+  options={[
+    { text: '1 个 prompt 的 8 条生成', correct: true },
+    { text: '8 个 prompt，每个 8 条，共 64 条', feedback: '这是把它当成 prompt 数的常见误解。它指的是序列条数。' },
+    { text: '8 个 prompt，每个 1 条', feedback: 'num_generations=8 意味着每个 prompt 必须采 8 条。' },
+    { text: '64 个 prompt', feedback: '相差太远。' },
+  ]}
+  explain={<>
+    这个参数是<strong>生成序列的条数</strong>，且必须被 <code>num_generations</code> 整除。
+    要「8 prompt × 8 条」，需要 <code>per_device_train_batch_size × gradient_accumulation_steps = 64</code>。
+    跑起来后核对日志里的实际样本数，别凭参数名猜。
+  </>}
+/>
+
+<Quiz
+  id="trl-2"
+  question="TRL 跑出来的平均回答长度明显长于你手写版，最可能的原因是？"
+  options={[
+    { text: 'loss_type 不同：TRL 默认 token 平权，你手写用的序列平权，token 平权会给长回答更大权重', correct: true },
+    { text: 'TRL 的 max_completion_length 设得更大', feedback: '如果两边都设 512，上限相同，差异来自权重分配。' },
+    { text: 'TRL 用了不同的 tokenizer', feedback: '同一个模型同一个 tokenizer。' },
+    { text: 'TRL 的学习率更高', feedback: '学习率影响收敛速度，不会系统性地拉长回答。' },
+  ]}
+  explain={<>
+    这正是 L2「归一化的经典陷阱」那一段讲的东西 —— 在框架里表现为一个默认值。
+    对齐两边的 <code>loss_type</code>，长度曲线就会贴近。
+  </>}
+/>
+
+<Quiz
+  id="trl-3"
+  question="为什么这一节强调「不要照抄任何博客的 TRL 参数」？"
+  options={[
+    { text: 'TRL 迭代很快，参数名、默认值、reward 函数签名在版本间都变过，应该用 inspect 直接问代码', correct: true },
+    { text: '因为博客作者水平参差不齐', feedback: '真正的原因是版本漂移，与作者水平无关。' },
+    { text: '因为 TRL 的参数是随机命名的', feedback: '命名是稳定设计，只是会随版本演进。' },
+    { text: '因为参数必须根据显卡型号调整', feedback: '显存相关的参数要调，但参数名本身与显卡无关。' },
+  ]}
+  explain={<>
+    <code>inspect.signature(GRPOConfig.__init__)</code> 会打出你这个版本真实接受的参数和默认值，
+    比查任何文档都准。这个习惯对所有快速迭代的库都适用。
+  </>}
+/>
+
+## 这节课的落点
+
+- 单卡框架层选 TRL：抽象层次刚好，reward 还是你自己的 Python
+- 你 L2 写的 `rewards.py` 能原样接进 `reward_funcs`
+- reward 函数三条约定：收批量、返回等长列表、数据集其它列走 `kwargs`
+- `per_device_train_batch_size` 是**序列条数**不是 prompt 数，最容易算错 batch
+- `loss_type` 默认是 token 平权，与手写的序列平权不等价，长度曲线会分岔
+- 用 `inspect.signature` 问你装的那个版本，不要照抄博客
+- 分数对不上先查三处：batch 语义、loss_type、importance sampling 修正

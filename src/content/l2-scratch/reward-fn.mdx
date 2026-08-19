@@ -1,0 +1,262 @@
+## reward 是这套系统里唯一真正需要你想清楚的东西
+
+算法部分（优势、clip、KL）基本是抄公式，抄对了就能跑。reward 不一样——**它编码了你到底想要什么**，而模型会用你想不到的方式去满足它。
+
+一句在 RL 圈流传的话：
+
+> 模型不会学你想教的，它会学你实际奖励的。
+
+所以这一节的重点不是「怎么写」，而是**「写完怎么自查」**。
+
+## 两个 reward，加起来
+
+数学题任务上，我们要两件事：答案对，格式规整。分开给分。
+
+### 正确性 reward
+
+```python
+# scripts/grpo_scratch/rewards.py
+import re
+
+def extract_answer(text: str) -> str | None:
+    """从回答里抽出最终答案。策略：优先找显式标记，退化到取最后一个数字。"""
+    # 1) 优先：<answer>...</answer>
+    m = re.search(r"<answer>\s*(.*?)\s*</answer>", text, re.S)
+    if m:
+        return normalize_number(m.group(1))
+
+    # 2) 其次："答案：xxx" / "答案是 xxx"
+    m = re.search(r"答案\s*[:：是]?\s*([\-\d,\.]+)", text)
+    if m:
+        return normalize_number(m.group(1))
+
+    # 3) 兜底：取全文最后一个数字
+    nums = re.findall(r"-?\d[\d,]*\.?\d*", text)
+    return normalize_number(nums[-1]) if nums else None
+
+
+def normalize_number(s: str) -> str | None:
+    """去掉千分位逗号和末尾的 .0，让 '1,200' 和 '1200.0' 判为相等。"""
+    s = s.strip().replace(",", "").rstrip(".")
+    try:
+        f = float(s)
+    except ValueError:
+        return None
+    return str(int(f)) if f == int(f) else str(f)
+
+
+def correctness_reward(text: str, gold: str) -> float:
+    got = extract_answer(text)
+    return 1.0 if got is not None and got == normalize_number(gold) else 0.0
+```
+
+### 格式 reward
+
+```python
+def format_reward(text: str) -> float:
+    """规整度分。分档给，不要只给 0/1。"""
+    score = 0.0
+    if re.search(r"<think>.*?</think>", text, re.S):
+        score += 0.1                     # 有推理段
+    if re.search(r"<answer>.*?</answer>", text, re.S):
+        score += 0.1                     # 有答案段
+    if text.count("<answer>") == 1:
+        score += 0.05                    # 只有一个答案段，没有重复刷
+    return score
+```
+
+### 合起来
+
+```python
+def total_reward(text: str, gold: str, truncated: bool = False) -> dict:
+    correct = correctness_reward(text, gold)
+    fmt = format_reward(text)
+    return {
+        "correct": correct,
+        "format": fmt,
+        # 正确性权重必须显著大于格式，否则模型会去刷便宜的那个
+        "total": 1.0 * correct + 1.0 * fmt - (0.5 if truncated else 0.0),
+    }
+```
+
+<Callout type="warn" title="权重的原则：便宜的分要给得少">
+格式分很容易拿（套个标签就行），正确性分很难拿（要真会算）。
+
+如果格式分给到 0.5，而正确性只给 1.0，模型会算一笔账：**「套标签成功率 100%，做对题成功率 30%」** —— 于是它专心套标签，放弃算对。
+
+所以格式分总和控制在 **0.2 ~ 0.3**，正确性给 **1.0**。让「做对题」始终是收益最高的路径。
+</Callout>
+
+## 自查：主动去找作弊路径
+
+写完 reward 之后，**不要马上开训**。先花十分钟做这件事：
+
+> 假装你是模型，只想最省力地拿高分。你会怎么钻？
+
+对上面这个 reward，逐条排查：
+
+| 作弊尝试 | 能拿多少分 | 堵住了吗 |
+| --- | --- | --- |
+| 空答案 `""` | format 0，correct 0 → **0** | ✅ |
+| 只输出 `<answer>0</answer>` | format 0.15，correct 0 → **0.15** | ✅ 分很低 |
+| 输出 20 个 `<answer>` 标签 | `count == 1` 不成立，扣掉 0.05 | ✅ |
+| 复述题目 + 套标签 | format 0.25，correct 0 → **0.25** | ✅ 远低于答对的 1.25 |
+| 一直写到被截断 | 截断罚 −0.5 | ✅ |
+| **列举一堆数字，赌最后一个对** | 兜底规则取最后一个数字 → 可能 **1.25** | ⚠️ **有漏洞** |
+
+最后一条是真漏洞。因为 `extract_answer` 的兜底策略是「取最后一个数字」，模型可以写 `"可能是 8，也可能是 10，或者 12"` 来提高命中率。
+
+<Callout type="trap" title="这个漏洞怎么堵">
+两种改法：
+
+1. **收紧抽取**：只认 `<answer>` 标签，找不到就判 0。代价是训练早期模型还不会用标签，会有大批 0 分（可能整组归零）。
+2. **加惩罚**：检测「答案段里有多个数字」或「回答里出现多个候选答案」时扣分。
+
+实践上推荐**先松后紧**：训练早期用宽松抽取（保证有信号），格式分把模型引导到用标签；等格式稳定了再收紧抽取。
+
+这也说明一件事：**reward 不是写一次就完的，它会跟着训练阶段调整。**
+</Callout>
+
+## 单元测试：喂垃圾进去看给不给错分
+
+reward 函数是纯函数，**必须写测试**。这是全项目里最值得写测试的地方——因为它错了不会报错，只会让模型学歪。
+
+```python
+def test_rewards():
+    gold = "10"
+
+    cases = [
+        # (回答, 期望的 correct 分, 说明)
+        ("<answer>10</answer>",                    1.0, "标准格式"),
+        ("答案：10",                                1.0, "中文标记"),
+        ("5-2+7=10",                               1.0, "兜底取最后数字"),
+        ("<answer>1,0</answer>",                   0.0, "逗号不该被当千分位吞掉数值"),
+        ("<answer>10.0</answer>",                  1.0, "归一化后应相等"),
+        ("答案是 12",                               0.0, "答错要给 0"),
+        ("",                                       0.0, "空答案"),
+        ("我不知道",                                0.0, "无数字"),
+        ("<answer>10</answer><answer>11</answer>", 1.0, "重复标签：correct 仍 1，但格式分要被扣"),
+    ]
+
+    for text, expect, why in cases:
+        got = correctness_reward(text, gold)
+        assert got == expect, f"[{why}] 期望 {expect} 得到 {got}：{text!r}"
+
+    # 格式分：重复标签必须比单个标签低
+    assert format_reward("<answer>10</answer>") > \
+           format_reward("<answer>10</answer><answer>11</answer>")
+
+    print("reward 测试全部通过")
+```
+
+<Callout type="note" title="第四个 case 值得单独说">
+`"<answer>1,0</answer>"` —— 归一化时把逗号当千分位去掉，会变成 `"10"`，被判为**正确**。但模型的本意可能是「1，0」两个数。
+
+这类边界要不要管，取决于它在你的数据上出现频率。列出来至少让你知道它存在。
+</Callout>
+
+## 看 reward 分布：这一批有没有信息量
+
+打分之后，**先看分布再开训**：
+
+```python
+import statistics
+
+def inspect_rewards(samples, rewards, group_size):
+    n_groups = len(rewards) // group_size
+    dead = 0
+    for g in range(n_groups):
+        chunk = rewards[g * group_size : (g + 1) * group_size]
+        if statistics.pstdev(chunk) < 1e-4:
+            dead += 1
+
+    print(f"reward 均值 : {statistics.mean(rewards):.3f}")
+    print(f"reward 标准差: {statistics.pstdev(rewards):.3f}")
+    print(f"全对的组   : {sum(1 for g in range(n_groups) if min(rewards[g*group_size:(g+1)*group_size]) > 0.9)}")
+    print(f"全错的组   : {sum(1 for g in range(n_groups) if max(rewards[g*group_size:(g+1)*group_size]) < 0.1)}")
+    print(f"std=0 白跑 : {dead} / {n_groups}  ({dead/n_groups:.0%})")
+```
+
+判读标准：
+
+| 现象 | 含义 | 怎么办 |
+| --- | --- | --- |
+| 均值接近 0，全错组多 | 题目太难，模型完全做不出 | 换简单点的题；或先做 SFT |
+| 均值接近满分，全对组多 | 题目太简单，学不到东西 | 换难题；训练可以结束了 |
+| **std=0 的组超过 30%** | 大量采样在白跑 | 调高 temperature；加连续格式分；上动态采样 |
+| 均值在中间、std 明显 | ✅ 健康 | 开训 |
+
+<Callout type="tip" title="理想的起点：正确率 20% ~ 60%">
+太低没有正样本可学，太高没有提升空间。
+
+跑 baseline 时如果正确率只有 5%，先换个更简单的数据子集（比如 GSM8K 里步数少的题）。**先让 RL 有东西可学，再谈难度。**
+</Callout>
+
+## 稀疏还是稠密
+
+上面的 reward 是**结果导向**的：只看最终答案对不对，不管过程。这叫稀疏奖励。
+
+另一种做法是给过程分：算对一步给一点分。这叫稠密奖励（过程监督）。
+
+| | 稀疏（只看结果） | 稠密（看过程） |
+| --- | --- | --- |
+| 实现难度 | 低 | 高，要能判每一步 |
+| 被钻空子的风险 | 低 | **高**，模型会去刷步骤 |
+| 学习效率 | 慢 | 快 |
+| R1 的选择 | ✅ 就用稀疏 | 论文里明确说尝试过过程奖励，效果不如预期 |
+
+**新手用稀疏。** 一是好写，二是不容易被钻。R1 的经验也支持这个选择。
+
+<Quiz
+  id="rw-1"
+  question="格式 reward 总和给 0.5、正确性给 1.0，会出什么问题？"
+  options={[
+    { text: '格式分太便宜：套标签成功率接近 100%，做对题只有 30%，模型会专心刷格式而放弃算对', correct: true },
+    { text: '不会有问题，两者都是正向激励', feedback: 'RL 优化的是期望收益。便宜且稳定的分数会挤掉困难但价值高的行为。' },
+    { text: '会导致 KL 爆炸', feedback: 'KL 与 reward 权重没有直接关系。' },
+    { text: '会让训练变慢', feedback: '速度不变，方向变了 —— 这更糟。' },
+  ]}
+  explain={<>
+    要算期望：套标签 1.0 × 0.5 = 0.5，答对 0.3 × 1.0 = 0.3。刷格式的期望收益更高。
+    原则：<strong>便宜的分要给得少</strong>，格式分总和控制在 0.2~0.3。
+  </>}
+/>
+
+<Quiz
+  id="rw-2"
+  question="下面哪些是写完 reward 后开训前应该做的？（多选）"
+  options={[
+    { text: '主动假装自己是模型，找出不解决问题就能拿分的路径', correct: true },
+    { text: '写单元测试，喂各种边界和垃圾输入，确认不给错分', correct: true },
+    { text: '看 reward 分布，确认 std=0 的组占比不高', correct: true },
+    { text: '把 reward 缩放到 0~100 让梯度更明显', feedback: 'GRPO 的优势除以了 std，对 reward 的绝对尺度不敏感。缩放没有意义。' },
+  ]}
+  explain={<>
+    前三条都是「开训前十分钟」能做完、但能省掉几小时白跑的检查。
+    最后一项恰好是 GRPO 尺度无关性质带来的好处：换 reward 不用重调学习率。
+  </>}
+/>
+
+<Quiz
+  id="rw-3"
+  question="`extract_answer` 兜底策略是「取全文最后一个数字」。这带来什么风险？"
+  options={[
+    { text: '模型可以列举多个候选答案来提高命中率，把最后一个数字当赌注', correct: true },
+    { text: '会导致抽取速度很慢', feedback: '正则很快，性能不是问题。' },
+    { text: '完全没有风险，这是最稳的策略', feedback: '它稳在「总能抽到东西」，但正是这个宽松给了作弊空间。' },
+    { text: '会让 reward 变成负数', feedback: '这个 reward 的下界是 0（截断罚除外），不会因抽取策略变负。' },
+  ]}
+  explain={<>
+    宽松抽取保证训练早期有信号，代价是留了作弊空间。
+    实用做法是<strong>先松后紧</strong>：早期宽松让 RL 起步，格式分引导用标签，稳定后再收紧抽取。
+  </>}
+/>
+
+## 这节课的落点
+
+- reward 编码你真正想要的东西，模型会学你实际奖励的，不是你想教的
+- 正确性与格式分开给分，格式分总和 0.2~0.3，正确性 1.0
+- 写完必须做两件事：主动找作弊路径、写单元测试喂垃圾输入
+- 抽取答案要归一化（千分位、小数点），且要意识到宽松兜底会留作弊空间
+- 开训前看分布：理想起点是正确率 20%~60%，std=0 的组不超过 30%
+- 新手用稀疏奖励（只看结果），R1 的经验也支持这个选择

@@ -1,0 +1,509 @@
+## 五种炸法
+
+RL 训练失败的方式远多于成功的方式。好消息是：**常见的就那五种，而且每种都有特征指纹。**
+
+这一节给你现场证据，你来判断和处置。原则贯穿全节：
+
+> **先看曲线，再改代码。** 不要一次动三个参数。
+
+先把 L2 那八个指标的诊断价值列成一张表——**这是全站最该记住的一张表**：
+
+| 指标 | 健康 | 异常时指向 |
+| --- | --- | --- |
+| `reward` | 缓升 | 平 = 没学；暴涨 = 可能在刷分 |
+| `acc`（只看答案对错） | 与 reward 同向 | **与 reward 背离 = reward hacking** |
+| `entropy` | 缓慢下降 | 趋近 0 = 熵崩塌 |
+| `kl` | 缓慢上行 | 陡增 = 跑飞 |
+| `adv_std` | 0.5 ~ 1.2 | 趋近 0 = 大量组退化，白跑 |
+| `clip_frac` | 几个百分点 | > 20% = 单步太猛 |
+| `ratio_mean` | ≈ 1.0 | 偏离 = 权重没同步 |
+| `len` | 稳定或与 acc 同向 | 单调暴涨而 acc 不动 = 长度作弊 |
+
+<Callout type="tip" title="如果你还没记 entropy，现在补上">
+熵是「输出分布有多分散」，直接反映探索能力。它是唯一能提前警告熵崩塌的指标。
+
+```python
+# 在算 logprob 的地方顺手算
+probs = torch.softmax(logits.float(), dim=-1)
+entropy = -(probs * torch.log(probs + 1e-10)).sum(-1)   # [B, T]
+ent = (entropy * mask).sum() / mask.sum()
+```
+</Callout>
+
+## 炸法一：熵崩塌
+
+**症状**：熵单调下降到接近 0。所有回答变得几乎一样，reward 卡在某个值不动。
+
+**机制**：RL 是正反馈系统。某个模式偶然拿了高分 → 概率被提高 → 更容易被采到 → 又拿高分 → 概率更高……最后模型只会输出这一种模式，**探索完全停止**。
+
+一旦熵塌了，组内没有差异，`adv_std` 也跟着趋近 0，训练实质上停了。而且**不可逆**——概率分布已经收缩，你降学习率也回不来。
+
+**处置**（按顺序试）：
+
+| 动作 | 说明 |
+| --- | --- |
+| 提高 temperature | 最直接。1.0 → 1.1/1.2 |
+| 加熵奖励 | 损失里加 `- entropy_coef × entropy`，从 0.001 起 |
+| 降学习率 | 减慢正反馈的速度 |
+| 从更早的 checkpoint 重启 | 熵已经塌了就救不回来了，只能回滚 |
+
+<Callout type="warn" title="熵崩塌要提前防，不能事后救">
+所以 `entropy` 必须记进日志，而且要**在它掉到 0.3 以下时就干预**，不要等它到 0。
+
+slime 有 `--entropy-coef` 参数（默认 0.00）就是为这个准备的。
+</Callout>
+
+## 炸法二：reward hacking
+
+**症状**：`reward` 稳步上升，`acc` 不动甚至下降。
+
+**机制**：你的 reward 有一条不解决问题就能拿分的捷径，模型找到了。
+
+L2 那节我们主动找过一遍作弊路径，但真实任务里的捷径往往没那么显眼。常见形态：
+
+| 形态 | 具体行为 |
+| --- | --- |
+| 刷格式分 | 套标签但答案是空的或随便填 |
+| 赌答案 | 列举多个候选，赌抽取器取到对的那个 |
+| 复述题目 | 把题目抄一遍凑长度和关键词 |
+| 钻抽取器 | 利用「取最后一个数字」之类的兜底规则 |
+| 讨好判分器 | 用 LLM-as-judge 时，输出判分模型偏好的风格而非更好的内容 |
+
+**处置**：
+
+1. **先定位**：把 reward 拆成分项记录（`reward_correct`、`reward_format` 分开），看是哪一项在涨
+2. **抽样看原文**：打印 reward 最高的 10 条回答，肉眼看它在干什么
+3. **堵漏**：收紧抽取规则、降低作弊项的权重、加针对性惩罚
+
+<Callout type="trap" title="reward hacking 是设计问题，不是超参问题">
+调学习率、调 KL 都救不了它。**唯一的修法是改 reward。**
+
+而且它会反复出现：你堵了一个洞，模型会找下一个。这就是 RL 工程里最耗时的部分——某种程度上，**RL 调试就是和自己的 reward 函数博弈。**
+</Callout>
+
+## 炸法三：长度爆炸
+
+**症状**：`len` 单调上涨直到全部顶到 `max_tokens`，`trunc` 比例飙升，`acc` 不涨或下降。
+
+**机制**：有三个可能来源，要分清：
+
+1. **per-token 归一化**（L2 讲过）：长回答的 token 多，对损失贡献大，变相奖励写长
+2. **长回答恰好更容易对**：模型学到「多写几步更可能算对」——**这是真实的正相关，不算作弊**
+3. **纯粹的作弊**：写一堆无关内容凑长度，钻长度相关的 reward
+
+<Callout type="note" title="怎么区分「正常变长」和「长度作弊」">
+看 `acc` 和 `len` 的关系：
+
+- `len` 涨、`acc` 也涨 → **正常**。写得更详细确实带来了更高正确率（L2 那次训练就是这样：len 78→152，acc 21%→57%）
+- `len` 涨、`acc` 平 → **有问题**。多写的部分没有价值
+- `len` 涨、`acc` 降 → **确定是问题**。而且可能因为大量截断导致答案缺失
+
+**只看 len 判断不了**，必须两个一起看。
+</Callout>
+
+**处置**：
+
+| 动作 | 说明 |
+| --- | --- |
+| 换成序列平权归一化 | 治来源 1，最干净 |
+| 加长度惩罚 | 超过某长度线性扣分。但要小心：惩罚太重会压制正常的推理 |
+| 提高 `max_tokens` | 如果截断率高，先排除「被截断导致误判」 |
+| 检查截断样本的 reward | 截断的样本要不要给负分？给多少？ |
+
+## 炸法四：KL 跑飞
+
+**症状**：`kl` 陡增（不是缓升），输出开始出现胡话、重复、乱码、混语言。
+
+**机制**：模型为了刷 reward，把「说人话」的能力训丢了。KL 度量的正是「离训练前那个模型有多远」。
+
+单卡上很常见的一个诱因：**`beta=0` 且不带参考模型**——完全没有约束，也完全看不见漂移。
+
+**处置**：
+
+1. **确认参考模型加载对了**（KL 应该恒 ≥ 0，如果出现负值是 bug，不是跑飞）
+2. **把 `beta` 从 0 提到 0.001 ~ 0.01**
+3. **降学习率**
+4. **回滚到 KL 陡增之前的 checkpoint**
+
+<Callout type="tip" title="β=0 不等于「不用管 KL」">
+现代配方确实常把 KL 系数设 0（slime 的入门例子就是 `--kl-loss-coef 0.00`），但它同时开着 `--use-kl-loss`——**KL 不进损失，但作为监控指标记录**。
+
+单卡上如果你为了省 1.1 GiB 而完全不要参考模型，就失去了这个预警。**建议留着它。**
+</Callout>
+
+## 炸法五：OOM
+
+**症状**：不用说。
+
+**机制与处置**已经在 L0 显存账本和 L3 colocate 那两节讲透了。这里只放一张速查表：
+
+```
+traceback 在 vLLM 栈    → 采样侧不够 → 降 max_model_len / 降并发 / 提 util
+traceback 在 transformers 栈 → 训练侧不够 → 降 micro batch / 开检查点 / 降 util
+```
+
+<Callout type="trap" title="OOM 发生在第 150 步而不是第 1 步">
+这种情况尤其恼人，原因通常是：某一批采样出了特别长的回答，峰值显存超了。
+
+对策：
+1. 按 `max_completion_length` 而不是平均长度做显存预算
+2. 留 10%~15% 余量
+3. **加 checkpoint**，这样至少不用从头再来
+</Callout>
+
+## 闯关
+
+下面是六份现场。**先自己判断，再敲命令看诊断。**
+
+<Terminal
+  id="failure-quest"
+  host="rl@forge"
+  cwd="~/rlforge/logs"
+  intro={"六份训练日志，每份是一种失效（有一份是健康的）。\n用 cat 打开，自己判断是哪一种炸法，再用 diagnose 对答案。\n输入 goals 看目标，hint 要提示。"}
+  commands={[
+    {
+      cmd: 'ls',
+      output: `case-1.log  case-2.log  case-3.log  case-4.log  case-5.log  case-6.log
+
+六份日志。建议顺序：先 cat 看，自己下结论，再 diagnose 对答案。`,
+    },
+    {
+      cmd: 'cat case-1.log',
+      output: `step   0  reward=0.412 acc=21.1% entropy=1.842 kl=0.0021 adv_std=1.031 clip=0.000 len=78
+step  40  reward=0.598 acc=36.7% entropy=1.204 kl=0.0187 adv_std=0.913 clip=0.021 len=95
+step  80  reward=0.681 acc=42.2% entropy=0.712 kl=0.0388 adv_std=0.674 clip=0.028 len=103
+step 120  reward=0.694 acc=43.0% entropy=0.284 kl=0.0501 adv_std=0.211 clip=0.019 len=104
+step 160  reward=0.695 acc=43.0% entropy=0.061 kl=0.0524 adv_std=0.038 clip=0.004 len=104
+step 199  reward=0.695 acc=43.0% entropy=0.009 kl=0.0526 adv_std=0.004 clip=0.001 len=104
+
+采样抽查 (step 199)，同一 prompt 的 8 条：
+  #0  "5-2+7=10，答案是10"
+  #1  "5-2+7=10，答案是10"
+  #2  "5-2+7=10，答案是10"
+  #3  "5-2+7=10，答案是10"
+  ... 8 条完全一致`,
+    },
+    {
+      cmd: 'diagnose case-1',
+      goal: '认出熵崩塌',
+      hint: '有一个指标单调走向 0，而且 8 条采样完全一样',
+      output: `诊断：熵崩塌 (entropy collapse)
+
+指纹：
+  entropy  1.842 → 0.009   单调走向 0  ← 主证据
+  adv_std  1.031 → 0.004   跟着塌了（无差异就无优势）
+  reward / acc  在 step 120 后完全冻结
+  8 条采样完全一致           ← 确诊
+
+机制：正反馈失控。某个模式拿了高分 → 概率提高 → 更容易被采到
+      → 又拿高分 → …最后分布收缩成一个点，探索停止。
+
+注意 reward 停在 0.695、acc 停在 43% —— 训练没有"崩坏"，
+它只是彻底停止了学习。这比明显的崩溃更容易被忽略。
+
+处置（按顺序）：
+  1. temperature 1.0 → 1.15
+  2. 加熵奖励 entropy_coef=0.001
+  3. 降学习率
+  4. 回滚到 step 80 附近的 checkpoint（熵 0.712 还健康）
+
+关键教训：熵崩塌不可逆。要在 entropy < 0.3 时就干预，别等到 0。`,
+    },
+    {
+      cmd: 'cat case-2.log',
+      output: `step   0  reward=0.418 acc=21.1% reward_fmt=0.041 entropy=1.831 kl=0.002 len=79
+step  40  reward=0.712 acc=22.7% reward_fmt=0.238 entropy=1.602 kl=0.021 len=88
+step  80  reward=0.938 acc=23.4% reward_fmt=0.481 entropy=1.588 kl=0.034 len=91
+step 120  reward=1.142 acc=22.7% reward_fmt=0.698 entropy=1.571 kl=0.041 len=93
+step 199  reward=1.361 acc=21.9% reward_fmt=0.902 entropy=1.564 kl=0.048 len=94
+
+reward 最高的 3 条 (step 199):
+  #1 total=1.95 "<think>让我思考这道题</think><answer>7</answer>"   (标准答案: 10)
+  #2 total=1.95 "<think>分析一下</think><answer>3</answer>"        (标准答案: 10)
+  #3 total=1.95 "<think>计算</think><answer>0</answer>"            (标准答案: 10)`,
+    },
+    {
+      cmd: 'diagnose case-2',
+      goal: '认出 reward hacking',
+      hint: '总分在涨，但只看答案对错的那个指标没动',
+      output: `诊断：reward hacking —— 刷格式分
+
+指纹：
+  reward     0.418 → 1.361   涨了 3 倍多
+  acc        21.1% → 21.9%   基本没动         ← 主证据：背离
+  reward_fmt 0.041 → 0.902   格式分是涨的全部来源
+  高分样本的 answer 全是错的，但格式完美     ← 确诊
+
+机制：格式分权重给太大了。模型算了一笔账：
+      套标签成功率 ~100%，做对题成功率 ~21%
+      → 专心套标签，放弃算对。
+
+而且 <think> 段是空壳（"让我思考这道题"），说明它连推理都没做，
+只是在满足正则。
+
+处置：
+  1. 格式分总和从 1.0 降到 0.2（正确性保持 1.0）
+  2. 给格式分加前置条件：只有 answer 非空且是数字才给
+  3. 检查 <think> 段长度，太短不给分
+
+关键教训：
+  · 必须把 reward 拆成分项记录，否则你只会看到「reward 在涨」
+  · acc 与 reward 背离是 reward hacking 的确诊信号
+  · 这是设计问题，调超参救不了`,
+    },
+    {
+      cmd: 'cat case-3.log',
+      output: `step   0  reward=0.412 acc=21.1% entropy=1.842 kl=0.0021 adv_std=1.031 clip=0.000 ratio=1.0000 len=78
+step  20  reward=0.468 acc=24.6% entropy=1.798 kl=0.0044 adv_std=1.008 clip=0.142 ratio=0.9271 len=80
+step  60  reward=0.479 acc=25.0% entropy=1.781 kl=0.0071 adv_std=1.012 clip=0.467 ratio=0.7615 len=81
+step 120  reward=0.483 acc=25.4% entropy=1.776 kl=0.0089 adv_std=1.003 clip=0.612 ratio=0.6188 len=80
+step 199  reward=0.485 acc=25.2% entropy=1.774 kl=0.0091 adv_std=0.998 clip=0.664 ratio=0.5407 len=80`,
+    },
+    {
+      cmd: 'diagnose case-3',
+      goal: '认出权重同步失效',
+      hint: '有一个指标本该恒等于 1',
+      output: `诊断：权重同步失效（严重 off-policy）
+
+指纹：
+  ratio      1.0000 → 0.5407   单调偏离 1     ← 特征指纹
+  clip_frac  0.000 → 0.664     2/3 的 token 梯度被截断
+  reward     前 20 步涨了一点，之后完全平掉
+  adv_std    正常（1.0 附近）   ← 排除了数据侧问题
+  entropy    正常              ← 排除了熵崩塌
+
+机制：vLLM 里还是几十步前的旧权重，训练侧已经走远了。
+      优势估计只对「产生这批数据的策略」有效，现在完全失效。
+
+为什么 adv_std 正常很关键：说明 rollout 和 reward 都没问题，
+问题一定在「采样用的模型」和「训练的模型」不是同一个。
+
+处置：
+  1. 检查 sync_weights_to_vllm() 是否真的被调用了
+  2. 检查它是否真的生效了（同步后重新采样，比对 logprob）
+  3. 框架用户：确认没有误配 num_steps_per_rollout 过大
+
+关键教训：ratio_mean 必须记进日志。它是唯一能一眼定位这个 bug 的指标，
+而这个 bug 完全不报错。`,
+    },
+    {
+      cmd: 'cat case-4.log',
+      output: `step   0  reward=0.412 acc=21.1% entropy=1.842 kl=0.0021 len=78  trunc=4.1%
+step  40  reward=0.581 acc=34.4% entropy=1.688 kl=0.0192 len=187 trunc=11.2%
+step  80  reward=0.634 acc=35.2% entropy=1.601 kl=0.0311 len=342 trunc=28.7%
+step 120  reward=0.641 acc=33.6% entropy=1.594 kl=0.0388 len=468 trunc=61.3%
+step 199  reward=0.628 acc=29.7% entropy=1.588 kl=0.0402 len=507 trunc=91.4%
+
+采样抽查 (step 199):
+  "让我仔细分析这道题。首先，我们需要理解题目的含义。题目说小明有5个苹果。
+   这是初始状态。接下来我们要考虑他给了小红2个。这意味着…（继续 400 token
+   都在复述题意，最后被截断，没有写出答案）"`,
+    },
+    {
+      cmd: 'diagnose case-4',
+      goal: '认出长度爆炸',
+      hint: '注意 len 和 acc 的关系，以及 trunc 的走势',
+      output: `诊断：长度爆炸
+
+指纹：
+  len    78 → 507        单调暴涨，逼近 max_tokens=512
+  trunc  4.1% → 91.4%    九成以上被截断              ← 最刺眼
+  acc    34.4% → 29.7%   在 step 40 后开始下降        ← 确诊有害
+  reward 也在 step 80 后开始掉
+
+关键判断：len 涨的同时 acc 在降 —— 这不是「写得更详细所以更准」，
+        而是有害的长度膨胀。
+
+对比 L2 那次健康的训练：len 78→152，acc 21%→57%，两者同向。
+     所以「len 涨」本身不是问题，要和 acc 一起看。
+
+恶性循环：
+  写长 → 被截断 → 答案缺失 → reward=0 → 但 per-token 归一化仍给长回答更大权重
+  → 继续写长
+
+处置（按顺序）：
+  1. 换序列平权归一化（治根，L2 那节讲过的陷阱）
+  2. max_tokens 提到 1024，先排除「截断导致误判」
+  3. 给截断样本明确的负分
+  4. 加长度惩罚（谨慎，太重会压制正常推理）
+
+关键教训：trunc 超过 15% 就要处理，超过 50% 训练已经在学错东西。`,
+    },
+    {
+      cmd: 'cat case-5.log',
+      output: `step   0  reward=0.412 acc=21.1% entropy=1.842 kl=0.0021 adv_std=1.031 len=78
+step  40  reward=0.556 acc=33.6% entropy=1.702 kl=0.0388 adv_std=0.941 len=96
+step  60  reward=0.612 acc=37.5% entropy=1.688 kl=0.1204 adv_std=0.902 len=112
+step  80  reward=0.588 acc=31.2% entropy=1.912 kl=0.8871 adv_std=0.887 len=203
+step 100 reward=0.401 acc=14.8% entropy=2.884 kl=4.2107 adv_std=0.812 len=388
+step 120 reward=0.203 acc= 3.9% entropy=3.907 kl=12.884 adv_std=0.604 len=498
+
+采样抽查 (step 120):
+  "the answer 是 10 个 apple。因为 5-2=3，3+7=10。所以 answer 是 ten。
+   ##### 答案 answer: 10 10 10 the。。。"`,
+    },
+    {
+      cmd: 'diagnose case-5',
+      goal: '认出 KL 跑飞',
+      hint: '有一个指标从 0.03 涨到了 12',
+      output: `诊断：KL 跑飞（语言能力崩坏）
+
+指纹：
+  kl       0.0021 → 12.88   陡增 4 个数量级        ← 主证据
+  entropy  1.842 → 3.907    反常上升（不是崩塌，是失控）
+  acc      37.5% → 3.9%     断崖式下跌
+  输出出现中英混杂、重复、乱标记                   ← 确诊
+
+注意与熵崩塌的区别：
+  熵崩塌  entropy → 0    输出高度一致
+  KL 跑飞 entropy → 上升  输出变成噪声
+这两个方向相反，别搞混。
+
+拐点在 step 60~80 之间：kl 从 0.12 跳到 0.89。
+如果监控了 KL 并设了告警，那时就该停下来。
+
+机制：完全没有 KL 约束（beta=0），模型为了刷 reward 一路漂移，
+      最后连语言分布都毁了。
+
+处置：
+  1. 回滚到 step 40~60 的 checkpoint（kl 还在 0.04 量级）
+  2. beta 从 0 提到 0.005
+  3. 降学习率
+  4. 给 KL 设告警阈值：超过 0.5 就停
+
+关键教训：beta=0 是现代配方的常见选择，但那也需要
+        「参考模型仍然常驻、KL 仍然被监控」。
+        为省 1.1 GiB 而完全不要参考模型，代价就是这份日志。`,
+    },
+    {
+      cmd: 'cat case-6.log',
+      output: `step   0  reward=0.412 acc=21.1% entropy=1.842 kl=0.0021 adv_std=1.031 clip=0.000 ratio=1.0000 len=78  trunc=4.1%
+step  40  reward=0.612 acc=38.7% entropy=1.744 kl=0.0139 adv_std=0.921 clip=0.024 ratio=1.0001 len=104 trunc=5.8%
+step  80  reward=0.742 acc=48.8% entropy=1.681 kl=0.0248 adv_std=0.834 clip=0.031 ratio=1.0000 len=127 trunc=6.9%
+step 120  reward=0.798 acc=53.5% entropy=1.602 kl=0.0331 adv_std=0.771 clip=0.036 ratio=0.9999 len=139 trunc=7.4%
+step 160  reward=0.831 acc=56.3% entropy=1.544 kl=0.0402 adv_std=0.702 clip=0.038 ratio=1.0001 len=148 trunc=8.1%
+step 199  reward=0.847 acc=57.4% entropy=1.498 kl=0.0451 adv_std=0.664 clip=0.041 ratio=1.0000 len=152 trunc=8.6%`,
+    },
+    {
+      cmd: 'diagnose case-6',
+      goal: '认出健康的训练，并说出它唯一需要留意的地方',
+      hint: '这一份没有炸。但有一个指标提示训练接近尾声了',
+      output: `诊断：健康 ✅
+
+逐项核对：
+  ✅ reward 0.412 → 0.847   缓慢稳定上升
+  ✅ acc    21.1% → 57.4%   与 reward 同向 → 不是刷分
+  ✅ entropy 1.842 → 1.498  缓慢下降，远离 0 → 探索还在
+  ✅ kl     0.002 → 0.045   缓慢上行，量级安全
+  ✅ clip   0.000 → 0.041   4%，更新幅度健康
+  ✅ ratio  恒 ≈ 1.0000     权重同步正常
+  ✅ len    78 → 152        与 acc 同向 → 正常变长不是作弊
+  ✅ trunc  4.1% → 8.6%     10% 以内
+
+唯一需要留意：
+  ⚠️ adv_std 1.031 → 0.664  在下降
+
+  含义：模型变强 → 简单题开始全对 → 组内差异变小 → 可采信息在减少。
+       这是训练进入后期的正常信号，不是故障。
+
+  三个选择：
+    1. 换更难的数据子集
+    2. 上动态采样，过滤掉 std=0 的退化组（slime 的
+       --over-sampling-batch-size + check_reward_nonzero_std）
+    3. 接受收益递减，在这里收尾
+
+这份日志就是 L2 那次训练的真实曲线。`,
+    },
+  ]}
+/>
+
+## 通用处置流程
+
+不管遇到哪种，按这个顺序：
+
+```
+1. 别改代码。先把八个指标画成图看一遍
+2. 确定是哪一种失效（用上面的指纹表）
+3. 找拐点：从第几步开始不对的？
+4. 从那一步之前的 checkpoint 重启
+5. 只改一个参数
+6. 跑 20 步冒烟，确认方向对了再放长
+```
+
+<Callout type="trap" title="最常见的错误处置：一次改三个参数">
+「降学习率 + 提 temperature + 加 KL」一起上，然后训练好了——**你不知道是哪个起了作用**，下次遇到还是要重来。
+
+一次一个。RL 实验本来就贵，别把它变得更贵。
+</Callout>
+
+<Quiz
+  id="fm-1"
+  question="entropy 单调降到 0.01，8 条采样完全一样，reward 和 acc 都冻结。这是什么，怎么办？"
+  options={[
+    { text: '熵崩塌。提高 temperature、加熵奖励，但最可靠的是回滚到熵还健康的 checkpoint —— 熵塌了不可逆', correct: true },
+    { text: 'reward hacking，改 reward 函数', feedback: 'reward hacking 的指纹是 reward 涨而 acc 不涨。这里两者都冻结了，是探索停止。' },
+    { text: '训练收敛了，正常结束', feedback: '收敛应该是 reward 到高位后平稳，而不是熵趋近 0、采样完全同质。这是病理性的。' },
+    { text: 'KL 跑飞', feedback: 'KL 跑飞时 entropy 会上升而不是趋近 0，输出变噪声而不是高度一致。方向相反。' },
+  ]}
+  explain={<>
+    熵崩塌 vs KL 跑飞是一对容易混的失效：
+    <strong>熵 → 0 是崩塌（输出同质）；熵上升 + KL 陡增是跑飞（输出噪声）。</strong>
+    熵崩塌要在 entropy &lt; 0.3 时就干预。
+  </>}
+/>
+
+<Quiz
+  id="fm-2"
+  question="`len` 从 78 涨到 152，`acc` 从 21% 涨到 57%。这是长度爆炸吗？"
+  options={[
+    { text: '不是。len 与 acc 同向上升，说明写得更详细确实带来了更高正确率', correct: true },
+    { text: '是，长度翻倍了就是长度爆炸', feedback: '只看 len 判断不了。长度爆炸的判据是 len 涨而 acc 不涨或下降。' },
+    { text: '是，应该立刻加长度惩罚', feedback: '这时加长度惩罚会压制有益的推理，反而伤害效果。' },
+    { text: '无法判断，需要看 KL', feedback: 'KL 不是判断长度问题的指标。要看的是 len 与 acc 的关系。' },
+  ]}
+  explain={<>
+    这正是 L2 那次健康训练的曲线。<strong>len 涨本身不是问题，len 涨而 acc 停才是。</strong>
+    再配合 trunc 比例（超过 15% 要处理）就能完整判断。
+  </>}
+/>
+
+<Quiz
+  id="fm-3"
+  question="`ratio_mean` 从 1.0 单调跌到 0.54，`clip_frac` 涨到 66%，但 `adv_std` 正常。指向什么？"
+  options={[
+    { text: '权重同步失效。adv_std 正常排除了 rollout 和 reward 的问题，剩下就是「采样的模型」与「训练的模型」不一致', correct: true },
+    { text: '学习率太大', feedback: '学习率大会推高 clip_frac，但不会让 ratio 单调偏离 1 —— 每批重新同步后 ratio 会回到 1。' },
+    { text: '数据集太难', feedback: '太难会表现为 reward 低、退化组多（adv_std 异常），而这里 adv_std 正常。' },
+    { text: '需要提高 temperature', feedback: 'temperature 影响组内多样性（adv_std），与 ratio 无关。' },
+  ]}
+  explain={<>
+    这道题的关键是<strong>用正常的指标做排除</strong>：adv_std 正常说明采样和打分链路是好的。
+    ratio 单调偏离 1 就只剩权重同步这一个解释。
+  </>}
+/>
+
+<Quiz
+  id="fm-4"
+  question="遇到失效时，下面哪些是正确的处置原则？（多选）"
+  options={[
+    { text: '先把八个指标画成图看一遍，不要立刻改代码', correct: true },
+    { text: '找到拐点，从拐点之前的 checkpoint 重启', correct: true },
+    { text: '一次只改一个参数，跑 20 步冒烟确认方向', correct: true },
+    { text: '把学习率、temperature、KL 系数一起调，尽快让训练恢复', feedback: '这样即使好了你也不知道是哪个起作用，下次遇到还得重来。RL 实验很贵，别让它更贵。' },
+  ]}
+  explain={<>
+    RL 调试的核心纪律是<strong>可归因</strong>：每次改动都要能回答「是这个改动起的作用吗」。
+    一次动三个参数就永久失去了这个能力。
+  </>}
+/>
+
+## 这节课的落点
+
+- 八个指标的诊断表是全站最该记住的一张表
+- **熵崩塌**：entropy → 0，输出同质，不可逆，要在 < 0.3 时干预
+- **reward hacking**：reward 涨而 acc 不涨；必须拆分项记录；只能改 reward
+- **长度爆炸**：len 涨且 acc 不涨；trunc > 15% 要处理；根因常是 per-token 归一化
+- **KL 跑飞**：KL 陡增 + entropy 上升 + 输出变噪声；与熵崩塌方向相反
+- **OOM**：看 traceback 在哪一侧；按 max 长度而非平均长度做预算
+- 用正常的指标做排除（adv_std 正常 → 排除数据侧）
+- 处置纪律：先看图 → 定失效 → 找拐点 → 回滚 → **只改一个参数** → 冒烟 20 步
