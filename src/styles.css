@@ -1,13 +1,26 @@
 @import "tailwindcss";
 
-/* 炉火橙 —— rlforge 的主色 */
+/*
+ * 靛蓝 —— rlforge 的主色。
+ *
+ * 色相取 266~275：与 storpath(30) 和 netpath(205) 都拉开足够距离，
+ * 三个站放在一起不会认错。
+ *
+ * brand-600 的亮度压到 0.48：它要承载「白字按钮」和「白底链接」
+ * 两种用法，对白色的对比度 6.9，稳过 WCAG AA。
+ *
+ * 三个浅色阶的彩度是按 sRGB 色域上限反解出来的（0.013 / 0.032 / 0.055），
+ * 不是随手填的。蓝色系在 sRGB 里蓝通道最先饱和，浅色阶按视觉直觉给
+ * 0.05 这种值会溢出色域、被浏览器 clamp —— 结果是实际渲染的彩度比写的低、
+ * 色相还会偏。这里每档都留了 5% 余量。
+ */
 @theme {
-  --color-brand-50: oklch(0.97 0.02 55);
-  --color-brand-100: oklch(0.94 0.05 60);
-  --color-brand-200: oklch(0.88 0.08 60);
-  --color-brand-500: oklch(0.67 0.18 45);
-  --color-brand-600: oklch(0.60 0.19 42);
-  --color-brand-700: oklch(0.51 0.17 40);
+  --color-brand-50: oklch(0.97 0.013 275);
+  --color-brand-100: oklch(0.93 0.032 272);
+  --color-brand-200: oklch(0.88 0.055 270);
+  --color-brand-500: oklch(0.58 0.19 270);
+  --color-brand-600: oklch(0.48 0.20 268);
+  --color-brand-700: oklch(0.41 0.18 266);
 }
 
 html {
