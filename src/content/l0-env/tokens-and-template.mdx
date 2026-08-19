@@ -1,0 +1,314 @@
+## 一半的「RL 不收敛」不是算法问题
+
+而是这三件事之一：
+
+1. chat template 拼错了，模型不知道该轮到它说话
+2. loss mask 错位，梯度算到了 prompt 上，或者错了一位
+3. 模型停不下来，全部回答顶到 `max_tokens` 被截断
+
+这三个都**不报错**。训练照跑、loss 有值、日志在刷，只是效果不对。而且它们排查起来比算法 bug 更烦，因为你会本能地先怀疑算法。
+
+这一节把它们提前踩掉。**代价是 30 分钟，收益是省掉一个通宵。**
+
+## tokenizer 做三件事
+
+| 职责 | 方法 | 会坑你的地方 |
+| --- | --- | --- |
+| 编码 / 解码 | `encode` / `decode` | 往返不保证还原（L2 会详述） |
+| 特殊 token | `eos_token_id`、`pad_token_id` | Base 模型可能没有 pad token |
+| chat template | `apply_chat_template` | Base 与 Instruct 的模板完全不同 |
+
+## 把模板打印出来看
+
+**不要相信任何博客里贴的模板长什么样**，包括这一页。直接打印你自己那个模型的：
+
+```python
+from transformers import AutoTokenizer
+
+tok = AutoTokenizer.from_pretrained("./models/Qwen3-0.6B")
+
+msgs = [{"role": "user", "content": "1+1=?"}]
+
+s = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+print(repr(s))          # 用 repr！否则看不见换行和空格
+```
+
+`repr` 这一点很关键——直接 `print` 你看不出末尾有没有换行，而那个换行会不会存在直接影响模型的行为。
+
+输出大致是这样（以 Qwen3 为例，实际以你打印出来的为准）：
+
+```
+'<|im_start|>user\n1+1=?<|im_end|>\n<|im_start|>assistant\n'
+```
+
+拆开看：
+
+```
+<|im_start|>user\n     ← 用户回合开始
+1+1=?                  ← 你的内容
+<|im_end|>\n           ← 用户回合结束
+<|im_start|>assistant\n ← 轮到模型了（这就是 add_generation_prompt 加的）
+                       ← 模型从这里开始生成
+```
+
+<Callout type="trap" title="add_generation_prompt=True 不能漏">
+少了它，字符串末尾停在 `<|im_end|>\n`，模型看到的是「用户说完了」，但没有「该你说了」的信号。
+
+后果是模型可能：自己再生成一个 `<|im_start|>user` 接着扮演用户、或者输出空白、或者直接输出 EOS。
+
+**症状是「模型什么都不说」或「模型自己和自己对话」。** 遇到这两种现象，第一件事就是 `repr` 打印你的 prompt。
+</Callout>
+
+## Base 与 Instruct 选错了会怎样
+
+| | Base 模型 | Instruct 模型 |
+| --- | --- | --- |
+| 训过对话格式吗 | ❌ | ✅ |
+| `apply_chat_template` | 可能没有模板，或有一个占位模板 | 有真正训过的模板 |
+| 直接问问题 | 会续写、复述、跑题 | 会回答 |
+| 适合做 RL 起点吗 | ⚠️ 可以，但要先 SFT 教格式 | ✅ 直接可用 |
+
+R1-Zero 证明了从 Base 直接跑 RL 是可行的，但那是在很强的大 base 模型 + 大量算力上。**0.6B 上从 Base 起步，你大概率会卡在「模型连格式都不稳」这一步**，采样出来一批 reward 全 0，整组优势归零，训练不动。
+
+<Callout type="gpu" title="所以本路径用 Instruct">
+`Qwen/Qwen3-0.6B` 是带指令能力的版本，直接可用。
+
+如果你想试 Base（`-Base` 后缀），先确认它的 `chat_template` 是不是 `None`——是的话你得自己拼 prompt，而且要先做一轮 SFT 把格式教会，否则 L2 的训练大概率跑不动。
+</Callout>
+
+## RL 里的 loss mask
+
+这是本节最重要的部分。
+
+一条完整序列长这样：
+
+```
+位置   0    1    2    3    4    5    6    7    8    9   10   11
+token  <im> user \n   1+1  =?   <end> \n  <im> asst \n   答案  是2
+       └──────────── prompt ────────────────────────┘  └─ completion ─┘
+
+attention_mask   1    1    1    1    1    1   1    1    1    1    1    1
+completion_mask  0    0    0    0    0    0   0    0    0    0    1    1
+```
+
+三个 mask 各管一件事：
+
+| mask | 覆盖 | 用来做什么 |
+| --- | --- | --- |
+| `attention_mask` | 所有真实 token（pad 之外） | 告诉模型哪些位置有内容 |
+| `completion_mask` | 只有模型生成的部分 | **哪些位置算 loss** |
+| padding | 补齐用的位置 | 上面两个都是 0 |
+
+为什么只对 completion 算 loss：prompt 是**给定的**，模型没有「选择」它。RL 优化的是模型的决策，而 prompt 里没有模型的决策。
+
+<Callout type="trap" title="错一位：最隐蔽的一个 bug">
+Transformer 在位置 `t` 输出的 logits，预测的是位置 `t+1` 的 token。
+
+所以要拿位置 `t` 那个 token 的概率，得用位置 `t-1` 的 logits：
+
+```python
+logits  = out.logits[:, :-1, :]     # 丢掉最后一个位置
+targets = input_ids[:, 1:]          # 丢掉第一个 token
+mask    = completion_mask[:, 1:]    # mask 跟着错一位
+```
+
+三个都要错一位，只错两个就完了。
+
+**这个 bug 不报错**，只是让梯度作用在错误的 token 上，训练看起来在跑但学不到东西。L2 会给出一个能一次性抓住它的断言：**ratio 初值必须恒等于 1**。
+</Callout>
+
+## 三种停止方式
+
+模型停下来有三条路，搞混了会导致「回答全部被截断」：
+
+| 方式 | 谁触发 | 停在哪 | 是否算完整回答 |
+| --- | --- | --- | --- |
+| **EOS token** | 模型自己 | 生成了 `eos_token_id` | ✅ 正常结束 |
+| **stop 字符串** | 采样器 | 匹配到指定字符串 | ✅ 正常结束 |
+| **max_tokens** | 采样器 | 长度到上限 | ❌ **被截断** |
+
+判断一条回答属于哪种：
+
+```python
+for cand in out.outputs:
+    if cand.finish_reason == "stop":
+        pass          # 正常结束（EOS 或 stop 字符串）
+    elif cand.finish_reason == "length":
+        pass          # 被 max_tokens 截断 ← 要统计比例
+```
+
+<Callout type="warn" title="截断的回答会给模型错误的信号">
+被截断 → 通常没写出最终答案 → 判分器抽不到答案 → reward 判 0 → 模型学到「这样答不好」。
+
+但真实原因是**长度不够**，不是答得不好。这是一种系统性的错误信号。
+
+所以 L2 的日志里有 `trunc` 这一项。判读标准：
+
+| 截断率 | 处置 |
+| --- | --- |
+| < 10% | 正常 |
+| 10% ~ 15% | 留意，看是否在上升 |
+| > 15% | 调高 `max_tokens`，或给截断样本单独的 reward 处理 |
+| > 50% | 训练已经在学错东西，停下来修 |
+</Callout>
+
+## 常见翻车现场
+
+<Terminal
+  id="template-debug"
+  host="rl@forge"
+  cwd="~/rlforge"
+  intro={"四个真实翻车现场。每个先看现象，再看 repr 打印出的真相。\ngoals 看目标，hint 要提示。"}
+  commands={[
+    {
+      cmd: 'python -m scripts.debug.template --case no-gen-prompt',
+      goal: '认出漏了 add_generation_prompt 的症状',
+      hint: '模型自己和自己对话，或者什么都不说',
+      output: `现象：8 条采样里 6 条是空的，2 条在扮演用户
+
+prompt (repr):
+'<|im_start|>user\\n1+1=?<|im_end|>\\n'
+                                    ↑ 到这里就结束了
+
+模型看到的是「用户说完了」，但没有「该你说了」的信号。
+
+生成结果:
+  #0  ""
+  #1  ""
+  #2  "<|im_start|>user\\n那 2+2 呢？<|im_end|>"    ← 自己扮演用户
+  ...
+
+修法: apply_chat_template(..., add_generation_prompt=True)
+
+正确的 prompt 应该以 '<|im_start|>assistant\\n' 结尾。`,
+    },
+    {
+      cmd: 'python -m scripts.debug.template --case template-in-output',
+      goal: '认出回答里带模板标记的原因',
+      hint: '不是模型学坏了，是 stop token 没配对',
+      output: `现象：回答文本里出现 <|im_end|> 之类的标记
+
+生成结果:
+  #0  "答案是 2<|im_end|>\\n<|im_start|>user\\n再问一个..."
+
+原因: EOS 判定没生效，模型越过回合边界继续生成。
+常见于两种情况：
+  1. 手工拼 prompt 时用了和模型训练时不一致的特殊 token
+  2. SamplingParams 里覆盖了 stop_token_ids，把 <|im_end|> 漏掉了
+
+危害: 这段"越界"文本会进 reward 函数。如果你的格式 reward 只看
+     正则匹配，模型可能学会靠生成多轮对话来刷分。
+
+修法: 不要手动传 stop_token_ids，让 vLLM 用模型 config 里的默认值；
+     必须自定义时，务必把 tok.eos_token_id 和 <|im_end|> 都包含进去。`,
+    },
+    {
+      cmd: 'python -m scripts.debug.template --case mask-off-by-one',
+      goal: '验证 loss mask 的错一位对齐',
+      hint: '三个张量都要错一位，只错两个就废了',
+      output: `构造一条已知序列，逐位置检查对齐…
+
+位置  token            算loss?  该算吗
+  0   <|im_start|>       ✗       ✗   ✅
+  1   user               ✗       ✗   ✅
+  ...
+  9   \\n                 ✗       ✗   ✅
+ 10   答案                ✓       ✓   ✅
+ 11   是2                 ✓       ✓   ✅
+
+mask.sum() = 2，与 completion 的 token 数一致 ✅
+
+--- 故意只错两个张量（漏了 mask）---
+位置  token            算loss?  该算吗
+  9   \\n                 ✓       ✗   ❌ 错了！梯度作用到 prompt 上
+ 10   答案                ✓       ✓
+ 11   是2                 ✗       ✓   ❌ 最后一个 completion token 漏了
+
+mask.sum() 仍然 = 2，所以从数量上看不出问题！
+
+这就是它隐蔽的原因：总数对得上，位置错了。
+只有 L2 那个 "ratio 初值恒为 1" 的断言能抓住它。`,
+    },
+    {
+      cmd: 'python -m scripts.debug.template --case truncation',
+      goal: '统计截断率并判断是否需要处理',
+      hint: 'finish_reason == "length" 就是被截断的',
+      output: `采样 512 条，统计 finish_reason…
+
+stop   (EOS 或 stop 字符串)  : 491  (95.9%)
+length (被 max_tokens 截断)  :  21  ( 4.1%)
+
+长度分布:
+    0- 50 token  ████████████████  187
+   51-100 token  ██████████████    164
+  101-200 token  ████████           98
+  201-400 token  ████               42
+  401-511 token  ▏                   0
+       512 token  ██                 21   ← 全都恰好等于上限
+                                          这是截断的特征形状
+
+读法：
+✅ 4.1% 在正常范围（< 10%）
+✅ 「恰好 512」形成一个孤立的柱子 —— 这是识别截断的直观信号，
+   健康的长度分布不会在上限处突然出现一根柱子
+
+对照：如果这根柱子占到 30%，说明大量回答没写完答案就被切了，
+     reward 判 0 是长度问题而不是能力问题。`,
+    },
+  ]}
+/>
+
+<Quiz
+  id="tt-1"
+  question="模型采样出来 8 条里有 6 条是空的，另外 2 条在扮演用户提问。最可能是什么原因？"
+  options={[
+    { text: 'apply_chat_template 漏了 add_generation_prompt=True，prompt 末尾没有「该你说了」的信号', correct: true },
+    { text: 'temperature 设得太高', feedback: 'temperature 高会让回答质量下降、变得发散，但不会产生大量空回答和角色错乱。' },
+    { text: '模型权重加载错了', feedback: '权重错了会输出乱码而不是这种有结构的角色错乱。' },
+    { text: 'max_tokens 太小', feedback: '太小会导致回答被截断（长度恰好等于上限），不会导致空回答。' },
+  ]}
+  explain={<>
+    第一件事永远是 <code>print(repr(prompt))</code> —— 用 repr 才看得见末尾的换行和特殊 token。
+    正确的 prompt 应该以 <code>assistant</code> 回合的开始标记结尾。
+  </>}
+/>
+
+<Quiz
+  id="tt-2"
+  question="loss mask 的错一位对齐，为什么「只错两个张量」这个 bug 特别难发现？"
+  options={[
+    { text: '因为 mask.sum() 的总数仍然对得上，从数量上看不出问题，只是作用的位置错了', correct: true },
+    { text: '因为它会导致程序崩溃，报错信息指向别处', feedback: '它完全不报错 —— 这正是它危险的地方。' },
+    { text: '因为它只在多卡训练时出现', feedback: '与并行无关，单卡一样会出现。' },
+    { text: '因为 PyTorch 会自动修正对齐', feedback: 'PyTorch 不知道你的语义意图，不会修正任何东西。' },
+  ]}
+  explain={<>
+    总数对得上、位置错了 —— 这种 bug 靠肉眼查日志查不出来。
+    L2 给的断言（<strong>ratio 初值必须恒等于 1</strong>）是唯一能一次性抓住它的方法。
+  </>}
+/>
+
+<Quiz
+  id="tt-3"
+  question="长度分布图上，在 max_tokens 处突然出现一根孤立的柱子，说明什么？"
+  options={[
+    { text: '那些回答是被截断的（finish_reason=length），不是自己说完的；比例过高会给模型系统性的错误信号', correct: true },
+    { text: '说明模型很啰嗦，但不影响训练', feedback: '影响很大：截断 → 答案缺失 → reward 判 0，模型收到的信号与真实原因不符。' },
+    { text: '这是健康长度分布的正常形状', feedback: '恰恰相反。健康分布是平滑衰减的，不会在上限处突然出现一根柱子。' },
+    { text: '说明 EOS token 配置错了', feedback: '可能相关，但更直接的解释是 max_tokens 不够。先看截断率再判断。' },
+  ]}
+  explain={<>
+    「恰好等于上限」形成孤立柱子是截断的特征形状。
+    判读：小于 10% 正常，超过 15% 要处理，超过 50% 训练已经在学错东西。
+  </>}
+/>
+
+## 这节课的落点
+
+- 一半的「RL 不收敛」是模板、mask、截断三件事之一，而且都不报错
+- 用 `print(repr(...))` 打印模板，别相信任何文档里贴的样子
+- `add_generation_prompt=True` 不能漏，漏了症状是空回答或模型自己扮演用户
+- 0.6B 用 Instruct 起步；Base 要先 SFT 教格式，否则 reward 全 0 训不动
+- `completion_mask` 只覆盖生成部分；logits / targets / mask **三个都要错一位**
+- 三种停止方式：EOS、stop 字符串是正常结束，`max_tokens` 是被截断
+- 用 `finish_reason` 统计截断率；「恰好等于上限」的孤立柱子是截断的特征形状

@@ -1,0 +1,407 @@
+## 先把曲线画出来
+
+你的训练脚本现在往 stdout 打一行行数字。**光看数字看不出形状**——趋势、拐点、两条线的相关性，全都要画出来才看得见。
+
+二十行代码，从日志画出八张图：
+
+```python
+# scripts/plot_log.py
+import re, sys
+import matplotlib.pyplot as plt
+
+KEYS = ["reward", "acc", "entropy", "kl", "adv_std", "clip", "ratio", "len"]
+
+def parse(path):
+    rows = []
+    for line in open(path):
+        m = re.match(r"\[\s*(\d+)\]", line)
+        if not m:
+            continue
+        row = {"step": int(m.group(1))}
+        for k in KEYS:
+            v = re.search(rf"\b{k}=([\d.]+)%?", line)
+            if v:
+                row[k] = float(v.group(1))
+        rows.append(row)
+    return rows
+
+rows = parse(sys.argv[1])
+steps = [r["step"] for r in rows]
+
+fig, axes = plt.subplots(2, 4, figsize=(18, 7))
+for ax, k in zip(axes.flat, KEYS):
+    ys = [r.get(k) for r in rows]
+    ax.plot(steps, ys, lw=1.4)
+    ax.set_title(k)
+    ax.grid(alpha=0.3)
+    # ratio 的参考线画在 1.0，一眼看出有没有偏离
+    if k == "ratio":
+        ax.axhline(1.0, color="red", ls="--", lw=0.8)
+plt.tight_layout()
+plt.savefig("logs/curves.png", dpi=120)
+print("→ logs/curves.png")
+```
+
+```bash
+python scripts/plot_log.py logs/run-01.log
+```
+
+<Callout type="tip" title="两个画图上的细节，值回时间">
+1. **`ratio` 那张图画一条 y=1.0 的红色参考线。** 权重同步失效的特征是 ratio 单调偏离 1，有参考线时一眼就看出来；没有的话你得盯着 y 轴刻度读数。
+
+2. **`reward` 和 `acc` 画在一起（或者上下相邻）。** 这两条线的**相对关系**比各自的绝对值重要得多——它们背离就是 reward hacking。相邻摆放能让你不用来回切图。
+</Callout>
+
+## 健康的形状长什么样
+
+先建立参照。这是 L2 那次成功训练的八条曲线（200 步）：
+
+| 指标 | 起点 → 终点 | 形状 | 为什么是健康的 |
+| --- | --- | --- | --- |
+| `reward` | 0.412 → 0.847 | 缓慢上升，后期趋平 | 在学，且收益递减是正常的 |
+| `acc` | 21.1% → 57.4% | **与 reward 同向** | 涨的是真能力，不是格式分 |
+| `entropy` | 1.842 → 1.498 | 缓慢下降，远离 0 | 在收敛但仍有探索空间 |
+| `kl` | 0.002 → 0.045 | 缓慢上行 | 有漂移但量级安全 |
+| `adv_std` | 1.031 → 0.664 | 缓慢下降 | ⚠️ 唯一要留意的（见下） |
+| `clip_frac` | 0.000 → 0.041 | 从 0 缓升到几个百分点 | 更新幅度健康 |
+| `ratio_mean` | 恒 ≈ 1.0000 | **平的** | 权重同步正常 |
+| `len` | 78 → 152 | 上升，且与 acc 同向 | 写详细带来了更高正确率 |
+
+<Callout type="note" title="记住这四个「形状词」">
+判断曲线用的词汇很小，就四个：
+
+- **缓升 / 缓降**：健康的变化都是渐进的
+- **平掉**：不再变化 —— 可能是收敛，也可能是卡住
+- **陡增 / 暴涨**：几步内跳一个数量级 —— 几乎总是坏消息
+- **单调偏离**：本该稳定的量持续往一个方向走 —— 通常是 bug 而不是现象
+
+八条曲线里，只有 `ratio_mean` 属于「本该稳定」那一类。其余七条都在变化，你要判断的是变化的**方向和速率**。
+</Callout>
+
+## adv_std 下降：唯一一个「正常但要留意」的信号
+
+`adv_std` 从 1.03 降到 0.66，这条值得单独说，因为它既不是故障也不能忽略。
+
+机制是这样的：
+
+```
+模型变强
+  → 简单题开始大面积全对
+    → 那些组的 reward 全是 1，std = 0
+      → 整组优势归零，这批白跑
+        → 平均下来 adv_std 就降了
+```
+
+所以它其实是在告诉你：**可采信息在减少，边际收益在下降。**
+
+判读标准：
+
+| adv_std | 含义 | 处置 |
+| --- | --- | --- |
+| 0.8 ~ 1.2 | 健康，组内差异充足 | 继续 |
+| 0.5 ~ 0.8 | 后期正常，收益开始递减 | 留意 |
+| 0.3 ~ 0.5 | 大量组退化，效率明显下降 | 换难题 / 上动态采样 |
+| < 0.2 | 训练实质已停 | 停下来，别烧卡时 |
+
+三个对策（L3 读 slime 时会看到工业框架怎么做）：
+
+1. **换更难的数据子集** —— 最直接
+2. **动态采样**：多采一些 prompt，丢掉 `std=0` 的组，补到目标 batch（DAPO 的做法）
+3. **加连续的格式分** —— 让分数不再只有 0/1，全对的组也能有差异
+
+<Callout type="warn" title="adv_std 趋近 0 和熵崩塌不是一回事">
+两者都会让 `adv_std` 降，但原因相反，处置也相反：
+
+| | adv_std 因题目太简单而降 | adv_std 因熵崩塌而降 |
+| --- | --- | --- |
+| `entropy` | 正常（1.4 左右） | **单调趋近 0** |
+| 8 条采样 | 内容不同，只是都对了 | **几乎完全一样** |
+| `acc` | 高（比如 57%） | 卡在某个中等值 |
+| 处置 | 换难题 | 提 temperature / 回滚 |
+
+**区分方法：看 `entropy` 和采样原文。** 这是本节最实用的一条辨别。
+</Callout>
+
+## 辨认训练：容易混的四组
+
+L4「五种炸法」会给五种命名失效的完整诊断与处置。这一节练的是更基础的一件事：**看到相似的现象，能不能分辨出不同的原因。**
+
+<Terminal
+  id="curve-drill"
+  host="rl@forge"
+  cwd="~/rlforge/logs"
+  intro={"四组配对。每组两份日志表面现象相似，原因完全不同。\n用 pair 看一组，diff 对答案。先自己判断再看。\ngoals 看目标，hint 要提示。"}
+  commands={[
+    {
+      cmd: 'ls',
+      output: `pair-a/  pair-b/  pair-c/  pair-d/
+
+四组配对，每组两份。建议：pair 看现象 → 自己判断 → diff 对答案。`,
+    },
+    {
+      cmd: 'pair a',
+      output: `【A 组】两份日志的 reward 都平掉了
+
+--- A1 ---
+step   0  reward=0.412 acc=21.1% entropy=1.842 adv_std=1.031 clip=0.000 ratio=1.0000
+step  40  reward=0.598 acc=36.7% entropy=1.204 adv_std=0.913 clip=0.021 ratio=1.0000
+step 120  reward=0.694 acc=43.0% entropy=0.284 adv_std=0.211 clip=0.019 ratio=1.0000
+step 199  reward=0.695 acc=43.0% entropy=0.009 adv_std=0.004 clip=0.001 ratio=1.0000
+
+--- A2 ---
+step   0  reward=0.412 acc=21.1% entropy=1.842 adv_std=1.031 clip=0.000 ratio=1.0000
+step  40  reward=0.468 acc=24.6% entropy=1.798 adv_std=1.008 clip=0.142 ratio=0.9271
+step 120  reward=0.483 acc=25.4% entropy=1.776 adv_std=1.003 clip=0.612 ratio=0.6188
+step 199  reward=0.485 acc=25.2% entropy=1.774 adv_std=0.998 clip=0.664 ratio=0.5407
+
+两份的 reward 最后都不动了。原因一样吗？`,
+    },
+    {
+      cmd: 'diff a',
+      goal: '区分「熵崩塌导致的平」与「同步失效导致的平」',
+      hint: '都平掉了，但一份的 entropy 塌了，另一份的 ratio 跑了',
+      output: `A1 = 熵崩塌     A2 = 权重同步失效
+
+关键差异（各看一个指标就够）：
+             A1        A2
+  entropy   0.009 ↓   1.774 →     A1 塌了，A2 正常
+  adv_std   0.004 ↓   0.998 →     A1 跟着塌，A2 正常
+  ratio     1.0000 →  0.5407 ↓    A1 正常，A2 跑了
+  clip      0.001     0.664       A1 几乎不截断，A2 截了 2/3
+
+诊断路径：
+  A1: entropy → 0，且 adv_std 跟着塌
+      → 分布收缩，探索停止 → 熵崩塌
+      注意 ratio 是正常的，说明代码没问题，是训练动力学出了事
+
+  A2: ratio 单调偏离 1，但 entropy 和 adv_std 都正常
+      → 采样和训练用的不是同一个模型 → 权重同步失效
+      adv_std 正常这一条很关键：它排除了数据侧的问题
+
+教训：「reward 平掉」是症状不是诊断。
+     必须再看两个指标才能定性 —— entropy 和 ratio。`,
+    },
+    {
+      cmd: 'pair b',
+      output: `【B 组】两份日志的 adv_std 都降到了 0.3 以下
+
+--- B1 ---
+step   0  reward=0.412 acc=21.1% entropy=1.842 adv_std=1.031 len=78
+step 100  reward=0.812 acc=54.7% entropy=1.588 adv_std=0.601 len=141
+step 199  reward=0.941 acc=71.9% entropy=1.502 adv_std=0.244 len=158
+
+--- B2 ---
+step   0  reward=0.412 acc=21.1% entropy=1.842 adv_std=1.031 len=78
+step 100  reward=0.681 acc=42.2% entropy=0.712 adv_std=0.674 len=103
+step 199  reward=0.694 acc=43.1% entropy=0.088 adv_std=0.211 len=104
+
+采样抽查:
+  B1 的 8 条: 写法各不相同（有的分步、有的一行），但 7 条都答对了
+  B2 的 8 条: 措辞几乎完全一致
+
+都是 adv_std < 0.3。该做的事一样吗？`,
+    },
+    {
+      cmd: 'diff b',
+      goal: '区分「题目变简单」与「熵崩塌」造成的 adv_std 下降',
+      hint: '看 entropy 和采样原文的多样性',
+      output: `B1 = 题目相对模型变简单了（好消息）
+B2 = 熵崩塌（坏消息）
+
+             B1        B2
+  entropy   1.502 →   0.088 ↓↓    B1 正常，B2 塌了
+  acc       71.9% ↑   43.1% →     B1 还在涨，B2 早就停了
+  采样多样性  写法不同    措辞雷同
+
+同一个指标（adv_std 低），两种完全相反的成因：
+
+  B1: 模型真的变强了，简单题全对 → 组内没差异
+      → 处置：换更难的数据 / 上动态采样 / 就此收尾
+      这是「毕业」而不是「故障」
+
+  B2: 分布收缩到一个点 → 组内没差异
+      → 处置：提 temperature / 加熵奖励 / 回滚到 entropy 健康的 checkpoint
+      而且熵崩塌不可逆，回滚往往是唯一出路
+
+教训：adv_std 只告诉你「组内没差异了」，
+     不告诉你「为什么」。答案在 entropy 和采样原文里。`,
+    },
+    {
+      cmd: 'pair c',
+      output: `【C 组】两份日志的 len 都在明显上涨
+
+--- C1 ---
+step   0  reward=0.412 acc=21.1% len=78  trunc=4.1%  kl=0.002
+step 100  reward=0.781 acc=52.3% len=131 trunc=7.1%  kl=0.031
+step 199  reward=0.847 acc=57.4% len=152 trunc=8.6%  kl=0.045
+
+--- C2 ---
+step   0  reward=0.412 acc=21.1% len=78  trunc=4.1%  kl=0.002
+step 100  reward=0.639 acc=35.9% len=406 trunc=44.5% kl=0.037
+step 199  reward=0.628 acc=29.7% len=507 trunc=91.4% kl=0.040
+
+都是 len 从 78 涨到三位数。都是问题吗？`,
+    },
+    {
+      cmd: 'diff c',
+      goal: '区分「正常变长」与「长度爆炸」',
+      hint: '只看 len 判断不了，要配 acc 和 trunc',
+      output: `C1 = 正常变长（不用管）
+C2 = 长度爆炸（要治）
+
+             C1              C2
+  len        78→152 (×1.9)   78→507 (×6.5)
+  acc        21%→57% ↑       21%→30% ↓        ← 决定性差异
+  trunc      4.1%→8.6%       4.1%→91.4%       ← 第二个决定性差异
+
+判据：
+  len 涨 + acc 涨  →  写得更详细确实带来更高正确率，正常
+  len 涨 + acc 平/降 →  多写的部分没有价值，有害
+
+  trunc 也是硬指标：
+    < 10%   正常
+    > 15%   要处理
+    > 50%   训练已经在学错东西（C2 的 91% 意味着几乎每条都没写完答案）
+
+C2 的恶性循环：
+  写长 → 被截断 → 答案缺失 → reward=0
+       → 但 per-token 归一化仍给长回答更大权重 → 继续写长
+
+教训：len 是最容易被误判的指标。
+     单独看它毫无意义，必须和 acc、trunc 一起看。`,
+    },
+    {
+      cmd: 'pair d',
+      output: `【D 组】两份日志的曲线都在抖
+
+--- D1 ---
+step  10  reward=0.502 acc=28.9% adv_std=1.104 clip=0.011 gnorm=0.84
+step  11  reward=0.318 acc=17.2% adv_std=0.987 clip=0.009 gnorm=0.91
+step  12  reward=0.611 acc=39.1% adv_std=1.052 clip=0.013 gnorm=0.79
+step  13  reward=0.402 acc=22.7% adv_std=1.021 clip=0.010 gnorm=0.88
+step  14  reward=0.588 acc=35.2% adv_std=1.088 clip=0.012 gnorm=0.83
+（每步剧烈抖动，但 20 步平滑后是缓慢上升的）
+每步 prompt 数: 2   G: 4   有效 batch: 8
+
+--- D2 ---
+step  10  reward=0.502 acc=28.9% adv_std=1.104 clip=0.198 gnorm=4.82
+step  11  reward=0.211 acc=11.7% adv_std=0.964 clip=0.241 gnorm=6.13
+step  12  reward=0.548 acc=32.0% adv_std=1.031 clip=0.302 gnorm=5.44
+step  13  reward=0.174 acc= 8.6% adv_std=0.998 clip=0.377 gnorm=7.02
+step  14  reward=0.302 acc=17.2% adv_std=1.012 clip=0.419 gnorm=6.88
+（抖动更剧烈，20 步平滑后没有明显趋势）
+每步 prompt 数: 8   G: 8   有效 batch: 64   学习率: 5e-5
+
+都是锯齿。哪个要修？`,
+    },
+    {
+      cmd: 'diff d',
+      goal: '区分「batch 太小的正常噪声」与「学习率过大」',
+      hint: '看 clip_frac 和 gnorm，还有平滑之后有没有趋势',
+      output: `D1 = batch 太小导致的采样噪声（可接受）
+D2 = 学习率过大（要修）
+
+                D1        D2
+  clip_frac    0.011      0.419      ← 决定性：D2 截了 42% 的 token
+  gnorm        0.8 左右    5~7        ← 梯度范数大一个数量级
+  有效 batch    8          64
+  平滑后趋势     缓升        无趋势
+  adv_std      正常        正常       ← 两者都排除了数据侧问题
+
+D1: 有效 batch 只有 8，一批里恰好都是难题或都是易题的概率很高，
+    所以逐步 reward 抖得厉害。但 clip 和 gnorm 都很小，
+    说明每一步的更新本身是温和的 —— 抖的是「观测」不是「更新」。
+    平滑后有清晰上升趋势 = 训练是有效的。
+    处置：想要更平滑就加大 batch（或加梯度累积），但不是必须。
+
+D2: batch 已经 64 了还这么抖，且 clip_frac 42%、gnorm 5~7。
+    这是「更新幅度」的问题：每一步都想跳太远，被 clip 大面积截断，
+    参数在解空间里来回弹。
+    处置：学习率降一个数量级（5e-5 → 5e-6 或 1e-6）。
+    参考：本路径推荐的 RL 学习率是 1e-6，5e-5 高了 50 倍。
+
+教训：曲线抖分两种 —— 观测噪声（batch 小）和更新震荡（lr 大）。
+     判据是 clip_frac 与 gnorm，以及「平滑后还有没有趋势」。`,
+    },
+  ]}
+/>
+
+## 一张判读表
+
+把八条曲线的诊断价值压成一张表。**这是全站最该记住的一张表**，L4 会反复用到：
+
+| 指标 | 健康 | 异常时指向 |
+| --- | --- | --- |
+| `reward` | 缓升 | 平 = 没学；暴涨 = 可能在刷分 |
+| `acc` | 与 reward 同向 | **与 reward 背离 = reward hacking** |
+| `entropy` | 缓降，远离 0 | 趋近 0 = 熵崩塌；上升 = 可能 KL 跑飞 |
+| `kl` | 缓升 | 陡增 = 跑飞 |
+| `adv_std` | 0.8 ~ 1.2 | 趋近 0 = 组内没差异（成因看 entropy） |
+| `clip_frac` | 几个百分点 | > 20% = 单步太猛，降学习率 |
+| `ratio_mean` | **恒 ≈ 1.0** | 单调偏离 = 权重没同步 |
+| `len` | 稳定或与 acc 同向 | 涨而 acc 不涨 = 长度作弊（配合 trunc 看） |
+
+<Callout type="tip" title="诊断的通用套路：用正常的指标做排除">
+四组配对里反复出现同一个手法：
+
+- A2 的 `adv_std` 正常 → 排除数据侧 → 问题在同步
+- B1 的 `entropy` 正常 → 排除熵崩塌 → 是模型真变强了
+- D1 的 `clip` 和 `gnorm` 正常 → 排除更新震荡 → 只是观测噪声
+
+**症状告诉你「不对」，正常的指标告诉你「不对在哪」。** 所以八条要记全——少记一条，就少一个排除工具。
+</Callout>
+
+<Quiz
+  id="rc-1"
+  question="两份日志的 reward 都平掉了。一份 entropy=0.009、ratio=1.0000；另一份 entropy=1.774、ratio=0.5407。分别是什么？"
+  options={[
+    { text: '前者熵崩塌（分布收缩、探索停止），后者权重同步失效（采样与训练不是同一个模型）', correct: true },
+    { text: '两者都是学习率太小', feedback: '学习率小会让 reward 涨得慢，但不会让 entropy 塌到 0.009，也不会让 ratio 偏离 1。' },
+    { text: '前者权重同步失效，后者熵崩塌', feedback: '反了。ratio 偏离 1 是同步失效的指纹；entropy 趋近 0 是熵崩塌的指纹。' },
+    { text: '都是数据集太简单', feedback: '数据太简单会表现为 adv_std 降但 entropy 和 ratio 正常。' },
+  ]}
+  explain={<>
+    「reward 平掉」是症状不是诊断。要再看两个指标才能定性：
+    <strong>entropy 管熵崩塌，ratio 管同步失效。</strong>
+  </>}
+/>
+
+<Quiz
+  id="rc-2"
+  question="`adv_std` 降到 0.24。怎么判断是「模型变强了」还是「熵崩塌」？"
+  options={[
+    { text: '看 entropy 和采样原文：entropy 正常且 8 条写法不同（只是都答对）= 变强；entropy 趋近 0 且措辞雷同 = 崩塌', correct: true },
+    { text: '看 reward 的绝对值，高就是变强', feedback: '熵崩塌也可能停在一个中等 reward 上（比如 0.69），单看绝对值分不出来。' },
+    { text: '看 kl，大就是崩塌', feedback: 'KL 反映的是与参考模型的距离，熵崩塌时 KL 未必大。' },
+    { text: '无法区分，adv_std 低就该停止训练', feedback: '这两种情况的处置完全相反：一个换难题，一个回滚。分不清就会用错药。' },
+  ]}
+  explain={<>
+    <code>adv_std</code> 只告诉你「组内没差异了」，不告诉你为什么。
+    答案在 <code>entropy</code> 和采样原文的多样性里 —— 这是本节最实用的一条辨别。
+  </>}
+/>
+
+<Quiz
+  id="rc-3"
+  question="两份日志的曲线都剧烈抖动。一份 clip=0.011 / gnorm=0.8 / 有效 batch 8；另一份 clip=0.419 / gnorm=6 / 有效 batch 64。哪个要修，修什么？"
+  options={[
+    { text: '后者要修，降学习率。前者只是 batch 小带来的观测噪声，平滑后仍有上升趋势', correct: true },
+    { text: '前者要修，加大 batch 是必须的', feedback: '加大 batch 能让曲线更平滑，但既然 clip 和 gnorm 都小、平滑后趋势清晰，训练本身是有效的，不是必须修。' },
+    { text: '两者都要降学习率', feedback: '前者 gnorm 只有 0.8、clip 1%，更新幅度已经很温和，降学习率只会更慢。' },
+    { text: '两者都只需要加大 batch', feedback: '后者 batch 已经 64 了还这么抖，问题不在 batch 而在单步更新幅度。' },
+  ]}
+  explain={<>
+    曲线抖分两种：<strong>观测噪声</strong>（batch 小，抖的是测量）和 <strong>更新震荡</strong>（lr 大，抖的是参数）。
+    判据是 <code>clip_frac</code> 与 <code>gnorm</code>，再看平滑后还有没有趋势。
+  </>}
+/>
+
+## 这节课的落点
+
+- 先把八条曲线画出来；`ratio` 图加一条 y=1.0 参考线，`reward` 和 `acc` 相邻摆放
+- 四个形状词：缓升缓降（健康）、平掉、陡增、单调偏离（通常是 bug）
+- 八条里只有 `ratio_mean` 属于「本该稳定」，其余都在变，判断的是方向与速率
+- `adv_std` 下降是「正常但要留意」：成因看 `entropy` 和采样原文的多样性
+- 「reward 平掉」「adv_std 低」「len 涨」「曲线抖」这四种症状**都对应两种以上原因**
+- 诊断套路：**症状告诉你不对，正常的指标告诉你不对在哪** —— 所以八条要记全
+- 五种命名失效的完整诊断与处置在 L4「五种炸法」

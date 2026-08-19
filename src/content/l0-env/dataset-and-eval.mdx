@@ -1,0 +1,419 @@
+## RL 只能证明「比训练前好」
+
+这是 RL 和监督学习一个很实际的差别。
+
+SFT 有 loss 曲线，掉下去就是在学。RL 的 reward 曲线**上升不代表能力变强**——它可能只是学会了刷你的 reward（L4 会专门讲这个）。
+
+所以唯一可信的证据是：**用一把训练时没碰过的题，量训练前和训练后的分数。**
+
+而这件事必须**在开训之前**做完。等训练跑完了才想起来量基线，你手上已经没有「训练前的模型」了（除非你存了原始权重——这也是为什么 checkpoint 要包含 step 0）。
+
+<Callout type="warn" title="这一节的产出物是一个数字">
+一个写在纸上（或者 `NOTES.md` 里）的百分数：**训练前，Qwen3-0.6B 在 GSM8K 测试集上的正确率**。
+
+后面 L2 跑完训练、L3 换框架重跑、L4 做三轮对照实验，全都要跟这个数字比。它是整条路径的原点。
+</Callout>
+
+## 为什么第一个任务选数学题
+
+不是因为数学重要，而是因为**它的 reward 干净**。
+
+回顾 L1 讲的两条路：RLHF 的奖励来自人类偏好（要训 reward model），RLVR 的奖励来自可验证的答案（规则判分）。数学题属于后者，而且是最纯的那种：
+
+| 你能百分之百确定 | 于是 |
+| --- | --- |
+| 这条回答的答案是 10 | 不需要 reward model |
+| 标准答案是 10 | 不需要人工标注 |
+| 所以这条对了 | reward 不会骗你 |
+
+这一条对新手价值极大：**当训练出问题时，你知道问题一定在算法或超参上，而不是「reward model 打分不准」。**
+
+RL 调试本来就有一堆不确定性（采样随机、优势估计有噪声、超参耦合），能提前砍掉一个不确定性来源，比什么都值。
+
+## GSM8K 的结构
+
+GSM8K（Grade School Math 8K）是小学应用题，每题需要 2 到 8 步推理。
+
+```
+训练集  7473 题
+测试集  1319 题
+```
+
+一条样本长这样：
+
+```json
+{
+  "question": "Natalia sold clips to 48 of her friends in April, and then she sold half as many clips in May. How many clips did Natalia sell altogether in April and May?",
+  "answer": "Natalia sold 48/2 = <<48/2=24>>24 clips in May.\nNatalia sold 48+24 = <<48+24=72>>72 clips altogether in April and May.\n#### 72"
+}
+```
+
+两个要点：
+
+1. **`answer` 字段包含完整解题过程**，不只是答案。最终答案在 `####` 之后。
+2. `<<48/2=24>>` 是数据集自带的计算器标注，判分时要忽略。
+
+所以准备数据的第一步是切出答案：
+
+```python
+def gold_answer(row) -> str:
+    return row["answer"].split("####")[-1].strip()
+```
+
+<Callout type="trap" title="不要拿训练集报分">
+这听起来是常识，但 RL 里有个特殊的诱惑：训练时你每步都在打分，`acc` 指标看着就在涨，很容易顺手把它当成成绩。
+
+**它不是。** 训练时的 `acc` 是在训练集上、用 temperature=1.0 采样算的，有三重问题：
+
+- 题目模型见过（虽然 RL 不像 SFT 那样死记，但仍有拟合）
+- 采样有随机性，同一题多次结果不同
+- 它是 G 条里的平均，不是「模型最好的一次」
+
+正式分数必须来自 **held-out 测试集 + 固定采样参数**。L4 会把这条流水线做扎实。
+</Callout>
+
+```bash
+export HF_ENDPOINT=https://hf-mirror.com
+hf download --repo-type dataset openai/gsm8k --local-dir ./data/gsm8k
+```
+
+## 写答案抽取器
+
+这是这一节技术含量最高的部分，也是最容易埋坑的部分。
+
+模型的回答格式是自由的，你要从一段自然语言里可靠地抽出「它认为的答案」。
+
+```python
+# scripts/eval_gsm8k.py
+import re
+
+NUM = r"-?\d[\d,]*\.?\d*"
+
+def extract_answer(text: str) -> str | None:
+    """按优先级尝试，越靠前越可信。"""
+    # 1) 显式标签（训练后模型会学会用这个，见 L2 的格式 reward）
+    m = re.search(r"<answer>\s*(.*?)\s*</answer>", text, re.S)
+    if m:
+        return normalize(m.group(1))
+
+    # 2) 常见的中英文答案标记
+    m = re.search(rf"(?:答案|answer|Answer)\s*(?:是|为)?\s*[:：]?\s*({NUM})", text)
+    if m:
+        return normalize(m.group(1))
+
+    # 3) GSM8K 自己的格式
+    m = re.search(rf"####\s*({NUM})", text)
+    if m:
+        return normalize(m.group(1))
+
+    # 4) 兜底：全文最后一个数字
+    nums = re.findall(NUM, text)
+    return normalize(nums[-1]) if nums else None
+
+
+def normalize(s: str) -> str | None:
+    """让 '1,200'、'1200.0'、'1200 ' 判为同一个数。"""
+    s = s.strip().replace(",", "").replace("$", "").rstrip(".")
+    try:
+        f = float(s)
+    except ValueError:
+        return None
+    # 整数就去掉小数部分，避免 '72' 与 '72.0' 判不等
+    return str(int(f)) if f == int(f) else str(f)
+```
+
+### 它会在哪里误判
+
+抽取器本身有误差，你必须知道它有多大、错在哪。列出来的都是真实会遇到的：
+
+| 回答 | 抽到 | 标准答案 | 判定 | 问题 |
+| --- | --- | --- | --- | --- |
+| `答案是 72` | 72 | 72 | ✅ | — |
+| `48+24=72` | 72 | 72 | ✅ | 兜底规则救了它 |
+| `72 clips` | 72 | 72 | ✅ | — |
+| `先算 24，再算 72，所以 72` | 72 | 72 | ✅ | — |
+| `答案是 72，也就是 6 打` | **6** | 72 | ❌ **误判** | 兜底取了最后一个数字 |
+| `1,200` | 1200 | 1200 | ✅ | 千分位已归一化 |
+| `$72` | 72 | 72 | ✅ | 已剥离美元符号 |
+| `72/1` | 1 | 72 | ❌ **误判** | 分数形式没处理 |
+| `大约 71.8` | 71.8 | 72 | ❌ | 数值确实不对，判错是正确的 |
+
+<Callout type="tip" title="怎么估抽取器自己的误差">
+**抽 50 条人工核对。** 具体做法：
+
+```python
+import random
+random.seed(0)
+for s in random.sample(results, 50):
+    print(f"抽到={s['pred']}  标准={s['gold']}  判定={'对' if s['ok'] else '错'}")
+    print(f"原文: {s['text'][-200:]}\n")
+```
+
+肉眼过一遍，数出「抽取器判错但回答其实是对的」和反过来的条数。这两个数除以 50 就是你的判分误差。
+
+经验值：写得认真的抽取器在 GSM8K 上误差在 **1%~3%**。这意味着两次实验差 2 个百分点时，**你不能说哪个更好**——差异在噪声里。知道这个数才能判断实验结论有没有意义。
+</Callout>
+
+## greedy 还是采样
+
+评测的采样参数必须固定，但用哪一组？两种口径各有用途：
+
+| 口径 | 参数 | 报什么 | 用途 |
+| --- | --- | --- | --- |
+| **greedy** | `temperature=0` | pass@1 | **主分**，可复现、无方差 |
+| **采样** | `temperature=0.7, n=k` | pass@k | 看模型「能不能做对」的上限 |
+
+pass@k 的含义：采 k 条，只要有一条对就算对。
+
+```
+pass@1 (greedy)  = 20.8%   ← 报这个
+pass@8           = 48.3%   ← 说明潜力在，只是不稳定
+```
+
+<Callout type="note" title="pass@1 与 pass@k 差距大意味着什么">
+上面这组数（greedy 20.8% 而 pass@8 48.3%）说的是：**模型很多时候能做对，只是不稳定。**
+
+这恰好是 RL 最擅长解决的问题——RL 不教新知识，它把「偶尔能做对」变成「稳定做对」，也就是把概率质量往正确答案上挪。
+
+反过来，如果 pass@8 也只有 22%（和 pass@1 差不多），说明模型根本不会做这类题，RL 帮不上忙，该先做 SFT。**这个对比是判断「该不该上 RL」的一个实用检查。**
+</Callout>
+
+## 跑 baseline
+
+```python
+# scripts/eval_gsm8k.py（续）
+import json, time
+from vllm import LLM, SamplingParams
+from transformers import AutoTokenizer
+
+def evaluate(model_path, data, tok, greedy=True, n=1, max_tokens=512, util=0.85):
+    llm = LLM(model=model_path, gpu_memory_utilization=util,
+              max_model_len=1024, dtype="bfloat16")
+
+    prompts = [
+        tok.apply_chat_template(
+            [{"role": "user", "content": row["question"]}],
+            tokenize=False, add_generation_prompt=True,
+        )
+        for row in data
+    ]
+
+    params = SamplingParams(
+        n=n,
+        temperature=0.0 if greedy else 0.7,
+        top_p=1.0,
+        max_tokens=max_tokens,
+        seed=0,                       # 固定种子，可复现
+    )
+
+    t0 = time.perf_counter()
+    outputs = llm.generate(prompts, params)
+    elapsed = time.perf_counter() - t0
+
+    hit = 0
+    lengths = []
+    records = []
+    for row, out in zip(data, outputs):
+        gold = normalize(row["answer"].split("####")[-1].strip())
+        oks = []
+        for cand in out.outputs:
+            pred = extract_answer(cand.text)
+            oks.append(pred is not None and pred == gold)
+            lengths.append(len(cand.token_ids))
+        ok = any(oks)                 # pass@k：有一条对就算对
+        hit += ok
+        records.append({"gold": gold, "pred": extract_answer(out.outputs[0].text),
+                        "ok": ok, "text": out.outputs[0].text})
+
+    return {
+        "n_questions": len(data),
+        "accuracy": hit / len(data),
+        "avg_length": sum(lengths) / len(lengths),
+        "seconds": elapsed,
+        "records": records,
+    }
+```
+
+跑起来：
+
+```bash
+python scripts/eval_gsm8k.py --model ./models/Qwen3-0.6B --split test --greedy
+```
+
+<Terminal
+  id="baseline"
+  host="rl@forge"
+  cwd="~/rlforge"
+  intro={"基线测量演练。三件事：跑 greedy 主分、跑 pass@8 看潜力、抽样核对判分器误差。\ngoals 看目标，hint 要提示。"}
+  commands={[
+    {
+      cmd: 'python scripts/eval_gsm8k.py --split test --greedy',
+      goal: '跑出训练前的 greedy 主分',
+      hint: '主分用 temperature=0，可复现、无方差',
+      output: `加载 GSM8K test: 1319 题
+INFO  Capturing CUDA graphs: 100%|██████████| 35/35
+Processed prompts: 100%|██████████| 1319/1319 [07:42<00:00]
+
+题目数     : 1319
+正确率     : 20.85%   (275 / 1319)
+平均长度   : 143 token
+耗时       : 462 s
+
+抽取失败（一个数字都没抽到）: 11 题 (0.8%)
+
+这就是原点。记进 NOTES.md。`,
+    },
+    {
+      cmd: 'python scripts/eval_gsm8k.py --split test --sample --n 8',
+      goal: '跑 pass@8，判断 RL 有没有发挥空间',
+      hint: 'pass@1 和 pass@k 的差距说明模型是"不会做"还是"不稳定"',
+      output: `Processed prompts: 100%|██████████| 1319/1319 [31:18<00:00]
+
+pass@1 (从这批采样里取第一条) : 19.71%
+pass@8                        : 48.29%
+平均长度                       : 156 token
+
+读法：
+  greedy 20.85%  →  pass@8 48.29%   差 27.4 个百分点
+
+结论：模型「有时候能做对」但很不稳定。
+这正是 RL 的用武之地 —— 把概率质量往已经能走通的那条路上挪。
+
+反例参照：如果 pass@8 也只有 22%，说明模型根本不会做这类题，
+        RL 帮不上忙，该先做 SFT。`,
+    },
+    {
+      cmd: 'python scripts/eval_gsm8k.py --audit 50',
+      goal: '抽 50 条人工核对，估出判分器自己的误差',
+      hint: '不知道判分误差，就没法判断两次实验的差异是否有意义',
+      output: `随机抽 50 条（seed=0）人工核对…
+
+判分器判对、人工也认为对   : 10
+判分器判错、人工也认为错   : 39
+判分器判错但回答其实对     :  1   ← 假阴性
+判分器判对但回答其实错     :  0   ← 假阳性
+
+假阴性那一条：
+  原文尾部: "...所以答案是 72，也就是 6 打鸡蛋。"
+  抽到: 6     标准: 72
+  原因: 兜底规则取了全文最后一个数字
+
+判分误差 ≈ 1/50 = 2.0%
+
+关键推论：两次实验分数差不到 2 个百分点时，你不能说哪个更好 ——
+差异在判分噪声里。这个数决定了你的实验能分辨多细的差别。`,
+    },
+    {
+      cmd: 'cat NOTES.md',
+      goal: '确认基线已经记录成型',
+      hint: '产出物是一份能在两周后还看得懂的记录',
+      output: `## 环境基线（2026-08-19）
+
+- 卡：RTX 5090 32GB，驱动 580.65
+- torch 2.x + cu128，vLLM x.y
+- 模型：Qwen3-0.6B bf16
+
+| 场景 | util | 吞吐 tok/s | 显存 GiB |
+| --- | --- | --- | --- |
+| 纯推理 | 0.45 | 3852 | 14.5 |
+| colocate 预留 | 0.30 | 2961 | 9.8 |
+
+引擎启动耗时约 23 s
+
+## 任务基线（2026-08-19）
+
+数据集   : GSM8K，train 7473 / test 1319
+判分器   : extract_answer + normalize，实测误差 ≈ 2.0%
+评测口径 : greedy(temp=0, seed=0), max_tokens=512, 全量 1319 题
+
+| 指标 | 训练前 |
+| --- | --- |
+| pass@1 (greedy) | 20.85% |
+| pass@8 (temp 0.7) | 48.29% |
+| 平均回答长度 | 143 token |
+| 评测耗时 | 462 s |
+
+结论：pass@1 与 pass@8 差 27 个百分点 → 模型不稳定而非不会做
+     → RL 有发挥空间，可以开始。
+
+分辨率下限：两次实验差 < 2 个百分点视为无差异。`,
+    },
+  ]}
+/>
+
+## 实验笔记的七个字段
+
+一次实验必须记下这七项，缺一项就可能在两周后变成一笔糊涂账：
+
+| 字段 | 为什么必须记 |
+| --- | --- |
+| **日期与 git commit** | 代码变了却记成同一次实验，是最常见的糊涂账 |
+| **模型与数据集切分** | 换过 base 模型、换过数据子集都会让分数不可比 |
+| **完整超参** | 直接把配置字典 dump 成 json，别手抄 |
+| **随机种子** | 不固定种子，你无法区分「改动有效」和「运气好」 |
+| **评测口径** | greedy 还是采样、多少题、哪个判分器版本 |
+| **分数与耗时** | 分数要带上判分误差范围 |
+| **你的解释** | 「为什么会这样」——两周后你只记得数字，不记得当时的想法 |
+
+<Callout type="tip" title="最后一项最容易省，也最值钱">
+数字机器能帮你记，判断只有你自己能记。
+
+写一句「reward 涨了但长度也涨了，怀疑是 per-token 归一化在起作用，下次换序列平权验证」——这句话就是你下一次实验的起点。省掉它，你下次会重新推一遍同样的思路。
+</Callout>
+
+<Quiz
+  id="de-1"
+  question="为什么基线必须在开训之前测？"
+  options={[
+    { text: '训练会原地改掉模型权重，事后就没有「训练前的模型」可测了（除非专门存了 step 0 的 checkpoint）', correct: true },
+    { text: '因为训练后 GPU 会发热影响测量精度', feedback: '温度会影响速度，不影响正确率。' },
+    { text: '因为数据集会被训练污染', feedback: '测试集本来就不参与训练，不存在这个污染路径。' },
+    { text: '不必须，训练后测也一样', feedback: '训练后你手上只有训练后的模型。没有对照，reward 曲线上升说明不了任何事。' },
+  ]}
+  explain={<>
+    RL 的 reward 曲线上升不等于能力变强（可能只是学会刷分）。
+    唯一可信的证据是<strong>训练前 vs 训练后在同一把 held-out 题上的分数</strong>，
+    所以「训练前」这个数必须先拿到。
+  </>}
+/>
+
+<Quiz
+  id="de-2"
+  question="测出 greedy pass@1 = 20.8%，pass@8 = 48.3%。这个组合说明什么？"
+  options={[
+    { text: '模型「有时候能做对」但不稳定，RL 有发挥空间——它的作用正是把概率质量挪到已经能走通的路径上', correct: true },
+    { text: '模型完全不会做这类题，应该先做 SFT', feedback: '那种情况的特征是 pass@8 也和 pass@1 差不多（比如 22%）。这里差了 27 个百分点。' },
+    { text: 'pass@8 更高说明该用 temperature=0.7 做正式评测', feedback: '正式主分要用 greedy（可复现、无方差）。pass@k 是看潜力的辅助指标。' },
+    { text: '说明判分器有问题', feedback: '判分器误差已单独测过（约 2%），不足以解释 27 个百分点的差距。' },
+  ]}
+  explain={<>
+    这个对比是判断「该不该上 RL」的实用检查：
+    <strong>pass@k 远高于 pass@1 → 上 RL；两者接近 → 先 SFT。</strong>
+  </>}
+/>
+
+<Quiz
+  id="de-3"
+  question="判分器实测误差约 2%。这个数字的实际用途是什么？"
+  options={[
+    { text: '它是实验的分辨率下限：两次实验分数差不到 2 个百分点时，不能断言哪个更好', correct: true },
+    { text: '把所有分数加上 2% 修正', feedback: '误差是双向的（假阴性和假阳性都有），不是一个可以加回去的固定偏移。' },
+    { text: '说明抽取器要重写', feedback: '1%~3% 是认真写的抽取器的正常水平。知道它比消除它更重要。' },
+    { text: '没什么用，只是个统计数字', feedback: '它直接决定你的实验结论有没有意义 —— 没有它你会把噪声当成改进。' },
+  ]}
+  explain={<>
+    不知道噪声水平，就会把 1 个百分点的波动当成「这个改动有效」，
+    然后基于假结论继续调。这是 RL 实验里最浪费时间的一种错误。
+  </>}
+/>
+
+## 这节课的落点
+
+- RL 的 reward 上升 ≠ 能力变强，唯一可信证据是 held-out 测试集上的前后对比
+- 基线必须在开训之前测，否则事后没有「训练前的模型」
+- 选数学题是为了 reward 干净，从而排除一个不确定性来源
+- GSM8K：7473 / 1319，答案在 `####` 之后，`<<...>>` 是要忽略的计算器标注
+- 抽取器按「显式标签 → 答案标记 → GSM8K 格式 → 兜底取最后数字」降级，并归一化千分位与小数
+- **抽 50 条人工核对**，估出判分误差（经验值 1%~3%），它是实验的分辨率下限
+- greedy 报主分，pass@k 看潜力；两者差距大说明 RL 有空间
+- 实验笔记七个字段，最后一项「你的解释」最容易省也最值钱

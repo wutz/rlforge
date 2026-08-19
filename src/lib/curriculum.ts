@@ -193,7 +193,7 @@ export const tracks: Track[] = [
         title: '先量起点：数据集与评测基线',
         summary: 'RL 只能证明「比训练前好」。所以第一件事是量出训练前的分数，否则后面所有曲线都没有意义。',
         kind: 'lab',
-        status: 'planned',
+        status: 'ready',
         minutes: 35,
         objectives: [
           '准备好 GSM8K 的训练/测试切分，并说清为什么不能拿训练集报分',
@@ -215,7 +215,7 @@ export const tracks: Track[] = [
         title: 'token 与 chat template：新手翻车最密集的地方',
         summary: '一半的「RL 不收敛」其实是模板拼错、EOS 没停、mask 错位。这一节把这些坑提前踩掉。',
         kind: 'concept',
-        status: 'planned',
+        status: 'ready',
         minutes: 30,
         objectives: [
           '手动拼出一条 chat template 的完整 token 序列，并指出哪些位置该算 loss',
@@ -296,7 +296,7 @@ export const tracks: Track[] = [
         title: 'reward 从哪来：可验证奖励、模型打分、人标',
         summary: 'reward 设计是 RL 里唯一真正需要你想清楚的事情。写歪一个 reward，模型会精确地学会钻它的空子。',
         kind: 'concept',
-        status: 'planned',
+        status: 'ready',
         minutes: 30,
         objectives: [
           '给一个任务设计出可验证 reward，并预判它会被怎么钻空子',
@@ -317,7 +317,7 @@ export const tracks: Track[] = [
         title: '策略梯度：为什么能对「采样出来的东西」求梯度',
         summary: 'RL 唯一绕不开的一段数学。这一节只推一个公式，但推完之后 GRPO 的代码你会觉得理所当然。',
         kind: 'concept',
-        status: 'planned',
+        status: 'ready',
         minutes: 40,
         objectives: [
           '解释 log-derivative trick：为什么梯度里出现了 log π',
@@ -471,7 +471,7 @@ export const tracks: Track[] = [
         title: '闯关：读第一次训练曲线',
         summary: '给你六组真实形状的训练曲线，判断哪些是在学、哪些是在作弊、哪些已经废了。',
         kind: 'quest',
-        status: 'planned',
+        status: 'ready',
         minutes: 40,
         objectives: [
           '从 reward、KL、长度、熵四条线的组合形状判断训练状态',
@@ -493,7 +493,7 @@ export const tracks: Track[] = [
         title: '把分数再往上推：三轮迭代实验',
         summary: '同一套代码，只改超参和 reward，做三轮对照实验，把 GSM8K 分数推到你能达到的最高点。',
         kind: 'lab',
-        status: 'planned',
+        status: 'ready',
         minutes: 60,
         objectives: [
           '设计一组只改一个变量的对照实验',
@@ -620,7 +620,7 @@ export const tracks: Track[] = [
         title: '从 1 卡到 8 卡：哪些结论会变',
         summary: '你在单卡上得到的所有直觉，哪些能带上多卡，哪些必须扔掉。为将来真有机器的那天做准备。',
         kind: 'concept',
-        status: 'planned',
+        status: 'ready',
         minutes: 30,
         objectives: [
           '说清 batch size、学习率、G 在扩到多卡时该怎么跟着变',
@@ -681,7 +681,7 @@ export const tracks: Track[] = [
         title: '评测：别用训练集骗自己',
         summary: '把评测做成一条能重复执行的流水线，让每次实验的分数可比。',
         kind: 'lab',
-        status: 'planned',
+        status: 'ready',
         minutes: 40,
         objectives: [
           '搭一条固定种子、固定采样参数的评测流程',
@@ -702,7 +702,7 @@ export const tracks: Track[] = [
         title: '调参优先级：先动哪三个旋钮',
         summary: '十几个超参不必都调。按影响排序，前三个决定成败，剩下的基本不用碰。',
         kind: 'concept',
-        status: 'planned',
+        status: 'ready',
         minutes: 35,
         objectives: [
           '按影响力给 GRPO 的超参排序，并说出每个的合理起始值',
@@ -745,7 +745,7 @@ export const tracks: Track[] = [
         title: '走完之后：下一道门在哪',
         summary: '你已经能在单卡上完整跑一轮 RL。接下来是 agentic RL、多轮工具调用、更大的模型——以及它们各自要求什么。',
         kind: 'concept',
-        status: 'planned',
+        status: 'ready',
         minutes: 25,
         objectives: [
           '知道 agentic RL 与单轮 RLVR 在工程上的差别',
