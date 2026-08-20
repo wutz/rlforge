@@ -25,7 +25,7 @@ const DEFAULTS: VramInput = {
 }
 
 const inputCls =
-  'w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100'
+  'w-full rounded-md border border-hairline bg-white px-3 py-2 text-sm outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100'
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
@@ -37,10 +37,11 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
   )
 }
 
+/* 三组占用色:墨黑 / 中灰 / 品牌淡紫 —— 不引入第四种彩色 */
 const GROUP_COLOR = {
-  train: 'bg-emerald-500',
-  ref: 'bg-sky-500',
-  infer: 'bg-violet-500',
+  train: 'bg-ink',
+  ref: 'bg-gray-400',
+  infer: 'bg-brand-500',
 } as const
 
 const GROUP_LABEL = {
@@ -59,12 +60,10 @@ export function VramBudget() {
   const maxLine = Math.max(...result.lines.map((l) => l.giB), 0.001)
 
   return (
-    <section className="my-6 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
-      <header className="flex items-center justify-between border-b border-gray-100 px-4 py-2.5">
+    <section className="my-6 overflow-hidden rounded-xl bg-white shadow-stack-sm">
+      <header className="flex items-center justify-between border-b border-hairline px-4 py-2.5">
         <div className="flex items-center gap-2">
-          <span className="rounded bg-violet-100 px-2 py-0.5 text-xs font-semibold text-violet-700">
-            计算器
-          </span>
+          <span className="badge-mono">计算器</span>
           <span className="text-sm font-medium text-gray-700">RL 训练显存账本</span>
         </div>
         <button
@@ -163,13 +162,13 @@ export function VramBudget() {
             </Field>
           </div>
 
-          <div className="space-y-1.5 rounded-lg bg-gray-50 px-3 py-2.5">
+          <div className="space-y-1.5 rounded-lg bg-canvas-soft px-3 py-2.5">
             <label className="flex items-center gap-2 text-sm text-gray-700">
               <input
                 type="checkbox"
                 checked={input.gradCheckpoint}
                 onChange={(e) => set('gradCheckpoint', e.target.checked)}
-                className="h-4 w-4 accent-violet-600"
+                className="h-4 w-4 accent-brand-600"
               />
               开梯度检查点
             </label>
@@ -178,7 +177,7 @@ export function VramBudget() {
                 type="checkbox"
                 checked={input.refModel}
                 onChange={(e) => set('refModel', e.target.checked)}
-                className="h-4 w-4 accent-violet-600"
+                className="h-4 w-4 accent-brand-600"
               />
               常驻参考模型（算 KL 用）
             </label>
@@ -187,7 +186,7 @@ export function VramBudget() {
                 type="checkbox"
                 checked={input.colocate}
                 onChange={(e) => set('colocate', e.target.checked)}
-                className="h-4 w-4 accent-violet-600"
+                className="h-4 w-4 accent-brand-600"
               />
               训推同卡（vLLM colocate）
             </label>
@@ -228,26 +227,22 @@ export function VramBudget() {
         <div className="space-y-3">
           <div
             className={`rounded-xl px-4 py-4 text-center ${
-              result.fits ? 'bg-emerald-50' : 'bg-rose-50'
+              result.fits ? 'bg-tip-soft/50' : 'bg-trap-soft/50'
             }`}
           >
             <div
-              className={`text-xs font-medium ${
-                result.fits ? 'text-emerald-700' : 'text-rose-700'
-              }`}
+              className={`text-xs font-medium ${result.fits ? 'text-tip-deep' : 'text-trap-deep'}`}
             >
               {result.fits ? '装得下' : '装不下，会 OOM'}
             </div>
             <div
-              className={`mt-1 text-3xl font-bold ${
-                result.fits ? 'text-emerald-900' : 'text-rose-900'
+              className={`mt-1 text-3xl font-semibold tracking-tight ${
+                result.fits ? 'text-tip-deep' : 'text-trap-deep'
               }`}
             >
               {formatGiB(result.totalGiB)}
             </div>
-            <div
-              className={`mt-1 text-xs ${result.fits ? 'text-emerald-700' : 'text-rose-700'}`}
-            >
+            <div className={`mt-1 text-xs ${result.fits ? 'text-tip-deep' : 'text-trap-deep'}`}>
               总共 {input.totalGiB} GiB ·{' '}
               {result.freeGiB >= 0
                 ? `余量 ${formatGiB(result.freeGiB)}`
@@ -256,7 +251,7 @@ export function VramBudget() {
           </div>
 
           {/* 占用条 */}
-          <div className="flex h-3 overflow-hidden rounded-full bg-gray-100">
+          <div className="flex h-3 overflow-hidden rounded-full bg-canvas-soft-2">
             {(['train', 'ref', 'infer'] as const).map((group) => {
               const giB = result.lines
                 .filter((l) => l.group === group)
@@ -292,14 +287,14 @@ export function VramBudget() {
           </div>
 
           {/* 明细 */}
-          <ul className="space-y-1.5 rounded-xl border border-gray-200 px-3 py-3">
+          <ul className="space-y-1.5 rounded-xl border border-hairline px-3 py-3">
             {result.lines.map((line) => (
               <li key={line.label}>
                 <div className="flex items-baseline justify-between gap-2 text-sm">
                   <span className="text-gray-600">{line.label}</span>
                   <span className="font-medium text-gray-900">{formatGiB(line.giB, 2)}</span>
                 </div>
-                <div className="mt-0.5 h-1 overflow-hidden rounded-full bg-gray-100">
+                <div className="mt-0.5 h-1 overflow-hidden rounded-full bg-canvas-soft-2">
                   <div
                     className={`h-full rounded-full ${GROUP_COLOR[line.group]}`}
                     style={{ width: `${(line.giB / maxLine) * 100}%` }}
@@ -311,7 +306,7 @@ export function VramBudget() {
           </ul>
 
           {result.warnings.length > 0 && (
-            <ul className="space-y-1.5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-900">
+            <ul className="space-y-1.5 rounded-xl border border-warn-soft bg-warn-soft/40 px-3 py-2.5 text-xs text-warn-deep">
               {result.warnings.map((w) => (
                 <li key={w} className="flex gap-1.5">
                   <span className="shrink-0">⚠</span>
@@ -322,7 +317,7 @@ export function VramBudget() {
           )}
 
           {result.suggestions.length > 0 && (
-            <ul className="space-y-1.5 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2.5 text-xs text-sky-900">
+            <ul className="space-y-1.5 rounded-xl border border-note-soft bg-note-soft/40 px-3 py-2.5 text-xs text-note-deep">
               {result.suggestions.map((s) => (
                 <li key={s} className="flex gap-1.5">
                   <span className="shrink-0">→</span>

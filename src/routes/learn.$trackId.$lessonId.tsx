@@ -1,6 +1,6 @@
 import { MDXProvider } from '@mdx-js/react'
 import { Link, createFileRoute } from '@tanstack/react-router'
-import { KIND_LABEL, KIND_STYLE, getFlatNeighbors, getLesson, lessonKey } from '#/lib/curriculum'
+import { KIND_LABEL, getFlatNeighbors, getLesson, lessonKey } from '#/lib/curriculum'
 import { getLessonContent } from '#/lib/content'
 import { getRole, roleNav } from '#/lib/roles'
 import { setLessonDone, useProgress } from '#/lib/progress'
@@ -23,9 +23,9 @@ function LessonPage() {
 
   if (!found) {
     return (
-      <div className="rounded-xl border border-gray-200 bg-white px-6 py-10 text-center">
+      <div className="rounded-xl bg-white px-6 py-10 text-center shadow-stack-sm">
         <p className="text-gray-500">
-          没有这节课：{trackId}/{lessonId}
+          没有这节课:{trackId}/{lessonId}
         </p>
         <Link to="/" className="mt-3 inline-block text-sm text-brand-600 hover:underline">
           返回学习路径
@@ -40,7 +40,7 @@ function LessonPage() {
   const done = progress.done.includes(key)
   const passedCheckpoints = progress.quiz.filter((q) => q.startsWith(`${key}#`)).length
 
-  /* 带 ?role= 进来就是"路线模式"：前后课按路线顺序走，而不是按 L0→L4 的全局顺序 */
+  /* 带 ?role= 进来就是"路线模式":前后课按路线顺序走,而不是按 L0→L4 的全局顺序 */
   const nav = roleNav(roleId, key)
   const inPath = nav?.current !== undefined
   const search = inPath ? { role: roleId } : {}
@@ -51,7 +51,7 @@ function LessonPage() {
   return (
     <div className="lg:grid lg:grid-cols-[1fr_15rem] lg:gap-8">
       <article className="min-w-0">
-        <nav className="text-xs text-gray-400">
+        <nav className="font-mono text-xs text-gray-400">
           <Link to="/" className="hover:text-gray-700">
             学习路径
           </Link>
@@ -63,30 +63,30 @@ function LessonPage() {
 
         <RoleBanner nav={nav} track={track} lesson={lesson} />
 
-        <header className="mt-3 border-b border-gray-200 pb-5">
+        <header className="mt-3 border-b border-hairline pb-5">
           <div className="flex flex-wrap items-center gap-2">
-            <span className={`rounded px-1.5 py-0.5 text-[11px] ${KIND_STYLE[lesson.kind]}`}>
-              {KIND_LABEL[lesson.kind]}
-            </span>
-            <span className="text-xs text-gray-400">预计 {lesson.minutes} 分钟</span>
+            {lesson.kind !== 'concept' && <span className="badge-mono">{KIND_LABEL[lesson.kind]}</span>}
+            <span className="font-mono text-xs text-gray-400">预计 {lesson.minutes} 分钟</span>
             {passedCheckpoints > 0 && (
-              <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[11px] text-emerald-700">
+              <span className="rounded-full bg-brand-100 px-2 py-0.5 text-[11px] font-medium text-brand-700">
                 检查点通过 {passedCheckpoints}
               </span>
             )}
           </div>
-          <h1 className="mt-2 text-2xl font-bold tracking-tight sm:text-3xl">{lesson.title}</h1>
-          <p className="mt-2 text-sm leading-relaxed text-gray-600 sm:text-base">{lesson.summary}</p>
+          <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl sm:tracking-[-0.025em]">
+            {lesson.title}
+          </h1>
+          <p className="mt-2 text-sm leading-relaxed text-gray-500 sm:text-base">{lesson.summary}</p>
         </header>
 
-        <section
-          className={`mt-6 rounded-xl border px-4 py-4 sm:px-5 ${track.accent.border} ${track.accent.bg}`}
-        >
-          <h2 className={`text-sm font-semibold ${track.accent.text}`}>学完这节你能做到</h2>
-          <ul className="mt-2 space-y-1.5 text-sm text-gray-700">
+        <section className="mt-6 rounded-xl border border-hairline bg-canvas-soft px-4 py-4 sm:px-5">
+          <h2 className="font-mono text-xs uppercase tracking-wide text-gray-400">
+            学完这节你能做到
+          </h2>
+          <ul className="mt-2.5 space-y-1.5 text-sm text-gray-700">
             {lesson.objectives.map((objective) => (
               <li key={objective} className="flex gap-2">
-                <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${track.accent.dot}`} />
+                <span className="mt-[0.55rem] h-1.5 w-1.5 shrink-0 rounded-full bg-brand-500" />
                 {objective}
               </li>
             ))}
@@ -106,9 +106,9 @@ function LessonPage() {
         </LessonKeyContext.Provider>
 
         {lesson.refs && lesson.refs.length > 0 && (
-          <section className="mt-10 rounded-xl border border-gray-200 bg-white px-4 py-4 sm:px-5">
-            <h2 className="text-sm font-semibold text-gray-900">延伸资料</h2>
-            <ul className="mt-2 space-y-1.5 text-sm">
+          <section className="mt-10 rounded-xl bg-white px-4 py-4 shadow-stack-sm sm:px-5">
+            <h2 className="font-mono text-xs uppercase tracking-wide text-gray-400">延伸资料</h2>
+            <ul className="mt-2.5 space-y-1.5 text-sm">
               {lesson.refs.map((ref) => (
                 <li key={ref.label + (ref.path ?? ref.href ?? '')} className="flex gap-2">
                   <span className="text-gray-300">·</span>
@@ -125,7 +125,7 @@ function LessonPage() {
                     <span className="text-gray-600">
                       {ref.label}
                       {ref.path && (
-                        <code className="ml-1.5 rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-700">
+                        <code className="ml-1.5 rounded bg-canvas-soft-2 px-1.5 py-0.5 font-mono text-xs text-gray-700">
                           {ref.path}
                         </code>
                       )}
@@ -137,26 +137,26 @@ function LessonPage() {
           </section>
         )}
 
-        <div className="mt-8 flex flex-wrap items-center gap-3 border-t border-gray-200 pt-6">
+        <div className="mt-8 flex flex-wrap items-center gap-3 border-t border-hairline pt-6">
           <button
             type="button"
             onClick={() => setLessonDone(key, !done)}
-            className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
+            className={`rounded-full px-4 py-2 text-sm font-medium transition ${
               done
-                ? 'border border-emerald-300 bg-emerald-50 text-emerald-700'
-                : 'bg-brand-600 text-white hover:bg-brand-700'
+                ? 'border border-hairline bg-white text-gray-500 hover:text-ink'
+                : 'bg-ink text-white hover:bg-gray-700'
             }`}
           >
-            {done ? '✓ 已标记完成（点击取消）' : '标记为已完成'}
+            {done ? '✓ 已标记完成(点击取消)' : '标记为已完成'}
           </button>
           {next ? (
             <Link
               to="/learn/$trackId/$lessonId"
               params={{ trackId: next.track.id, lessonId: next.lesson.id }}
               search={search}
-              className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 transition hover:bg-gray-50"
+              className="rounded-full border border-hairline bg-white px-4 py-2 text-sm text-gray-600 transition hover:bg-canvas-soft-2 hover:text-ink"
             >
-              下一课：{next.lesson.title} →
+              下一课:{next.lesson.title} →
             </Link>
           ) : (
             inPath && (
@@ -184,19 +184,17 @@ function LessonPage() {
       </article>
 
       <aside className="mt-10 lg:mt-0">
-        <div className="sticky top-20 max-h-[calc(100vh-6rem)] overflow-y-auto rounded-xl border border-gray-200 bg-white px-4 py-4">
+        <div className="sticky top-20 max-h-[calc(100vh-6rem)] overflow-y-auto rounded-xl bg-white px-4 py-4 shadow-stack-sm">
           {nav && inPath ? (
             <>
-              <div className="text-xs font-semibold text-gray-500">{nav.path.role.title}</div>
-              <div className="mt-0.5 text-[11px] text-gray-400">
+              <div className="font-mono text-xs text-gray-400">{nav.path.role.title}</div>
+              <div className="mt-0.5 font-mono text-[11px] text-gray-400">
                 第 {nav.current?.index} / {nav.path.lessonCount} 节
               </div>
               <ol className="mt-2 space-y-2.5 text-sm">
                 {nav.path.stages.map(({ stage, items }) => (
                   <li key={stage.title}>
-                    <div className="px-2 text-[11px] font-semibold tracking-wide text-gray-400">
-                      {stage.title}
-                    </div>
+                    <div className="px-2 font-mono text-[11px] text-gray-400">{stage.title}</div>
                     <ol className="mt-1 space-y-0.5">
                       {items.map((item) => (
                         <li key={item.key}>
@@ -205,7 +203,6 @@ function LessonPage() {
                             lessonId={item.lesson.id}
                             title={item.lesson.title}
                             level={item.track.level}
-                            levelClass={`${item.track.accent.bg} ${item.track.accent.text}`}
                             search={search}
                             active={item.key === key}
                             done={progress.done.includes(item.key)}
@@ -219,7 +216,7 @@ function LessonPage() {
             </>
           ) : (
             <>
-              <div className="text-xs font-semibold text-gray-500">
+              <div className="font-mono text-xs text-gray-400">
                 {track.level} · {track.title}
               </div>
               <ol className="mt-2 space-y-0.5 text-sm">
@@ -244,7 +241,7 @@ function LessonPage() {
   )
 }
 
-/** 路线模式的提示条：这是第几节、属于哪一段，以及退出路线的出口 */
+/** 路线模式的提示条:这是第几节、属于哪一段,以及退出路线的出口 */
 function RoleBanner({
   nav,
   track,
@@ -256,15 +253,15 @@ function RoleBanner({
 }) {
   if (!nav) return null
 
-  // 带了 ?role= 但这节课不在那条路线里：说清楚，并给一条回去的路
+  // 带了 ?role= 但这节课不在那条路线里:说清楚,并给一条回去的路
   if (!nav.current) {
     return (
-      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs">
-        <span className="text-amber-800">这一节没排进「{nav.path.role.title}」路线</span>
+      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-warn-soft bg-warn-soft/40 px-3.5 py-2.5 text-xs">
+        <span className="text-warn-deep">这一节没排进「{nav.path.role.title}」路线</span>
         <Link
           to="/"
           search={{ role: nav.path.role.id }}
-          className="ml-auto text-amber-700 underline hover:text-amber-900"
+          className="ml-auto text-warn-deep underline hover:text-warn-deep/80"
         >
           回到路线 →
         </Link>
@@ -275,7 +272,7 @@ function RoleBanner({
   const percent = Math.round((nav.current.index / nav.path.lessonCount) * 100)
 
   return (
-    <div className="mt-3 rounded-xl border border-brand-200 bg-brand-50/70 px-3.5 py-2.5">
+    <div className="mt-3 rounded-xl border border-brand-200 bg-brand-50 px-3.5 py-2.5">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
         <span className="font-semibold text-brand-700">{nav.path.role.title} 路线</span>
         <span className="text-gray-500">
@@ -291,7 +288,7 @@ function RoleBanner({
           退出路线
         </Link>
       </div>
-      <div className="mt-2 h-1 overflow-hidden rounded-full bg-white/80">
+      <div className="mt-2 h-1 overflow-hidden rounded-full bg-white">
         <div className="h-full rounded-full bg-brand-500" style={{ width: `${percent}%` }} />
       </div>
     </div>
@@ -303,7 +300,6 @@ function SidebarLink({
   lessonId,
   title,
   level,
-  levelClass,
   search,
   active,
   done,
@@ -312,7 +308,6 @@ function SidebarLink({
   lessonId: string
   title: string
   level?: string
-  levelClass?: string
   search: { role?: string }
   active: boolean
   done: boolean
@@ -323,13 +318,15 @@ function SidebarLink({
       params={{ trackId, lessonId }}
       search={search}
       className={`block rounded-lg px-2 py-1.5 leading-snug transition ${
-        active ? 'bg-brand-50 font-medium text-brand-700' : 'text-gray-600 hover:bg-gray-50'
+        active
+          ? 'bg-brand-50 font-medium text-brand-700'
+          : 'text-gray-600 hover:bg-canvas-soft'
       }`}
     >
-      <span className={`mr-1.5 text-xs ${done ? 'text-emerald-500' : 'text-gray-300'}`}>
+      <span className={`mr-1.5 font-mono text-xs ${done ? 'text-brand-600' : 'text-gray-300'}`}>
         {done ? '✓' : '○'}
       </span>
-      {level && <span className={`mr-1 rounded px-1 py-0.5 text-[10px] ${levelClass}`}>{level}</span>}
+      {level && <span className="badge-mono mr-1.5 px-1 py-0 text-[10px]">{level}</span>}
       {title}
     </Link>
   )
@@ -339,9 +336,7 @@ function OutlinePlaceholder({ outline }: { outline: string[] }) {
   return (
     <div className="rounded-xl border border-dashed border-gray-300 bg-white px-5 py-5">
       <div className="flex items-center gap-2">
-        <span className="rounded bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-500">
-          正文待编写
-        </span>
+        <span className="badge-mono">正文待编写</span>
         <span className="text-xs text-gray-400">以下是本节已定稿的小节大纲</span>
       </div>
       <ol className="mt-4 space-y-2">

@@ -54,12 +54,12 @@ export function Quiz({
   }
 
   return (
-    <section className="my-6 rounded-xl border border-gray-200 bg-white shadow-sm">
-      <header className="flex items-center gap-2 border-b border-gray-100 px-4 py-2.5">
-        <span className="rounded bg-brand-100 px-2 py-0.5 text-xs font-semibold text-brand-700">
+    <section className="my-6 rounded-xl bg-white shadow-stack-sm">
+      <header className="flex items-center gap-2 border-b border-hairline px-4 py-2.5">
+        <span className="rounded-full bg-brand-100 px-2.5 py-0.5 text-xs font-medium text-brand-700">
           检查点
         </span>
-        <span className="text-xs text-gray-400">{multi ? '多选' : '单选'}</span>
+        <span className="font-mono text-xs text-gray-400">{multi ? '多选' : '单选'}</span>
       </header>
 
       <div className="px-4 py-4">
@@ -69,10 +69,10 @@ export function Quiz({
           {options.map((option, index) => {
             const chosen = picked.includes(index)
             const reveal = submitted
-            let cls = 'border-gray-200 hover:border-brand-500 hover:bg-brand-50'
+            let cls = 'border-hairline hover:border-brand-500 hover:bg-brand-50'
             if (chosen && !reveal) cls = 'border-brand-500 bg-brand-50'
-            if (reveal && option.correct) cls = 'border-emerald-400 bg-emerald-50'
-            if (reveal && chosen && !option.correct) cls = 'border-rose-400 bg-rose-50'
+            if (reveal && option.correct) cls = 'border-tip-soft bg-tip-soft/40'
+            if (reveal && chosen && !option.correct) cls = 'border-trap-soft bg-trap-soft/40'
 
             return (
               <li key={index}>
@@ -89,7 +89,7 @@ export function Quiz({
                   </span>
                   <span className="text-gray-800">{option.text}</span>
                   {reveal && chosen && !option.correct && option.feedback && (
-                    <span className="mt-1 block text-xs text-rose-700">{option.feedback}</span>
+                    <span className="mt-1 block text-xs text-trap-deep">{option.feedback}</span>
                   )}
                 </button>
               </li>
@@ -102,7 +102,7 @@ export function Quiz({
             type="button"
             onClick={submit}
             disabled={!picked.length}
-            className="mt-4 rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-gray-300"
+            className="mt-4 rounded-full bg-ink px-4 py-2 text-sm font-medium text-white transition hover:bg-gray-700 disabled:cursor-not-allowed disabled:bg-gray-300"
           >
             提交
           </button>
@@ -110,7 +110,7 @@ export function Quiz({
           <div className="mt-4">
             <div
               className={`rounded-lg px-3 py-2.5 text-sm ${
-                isCorrect ? 'bg-emerald-50 text-emerald-800' : 'bg-rose-50 text-rose-800'
+                isCorrect ? 'bg-tip-soft/50 text-tip-deep' : 'bg-trap-soft/50 text-trap-deep'
               }`}
             >
               <strong>{isCorrect ? '答对了。' : '还不对。'}</strong>
@@ -120,7 +120,7 @@ export function Quiz({
               <button
                 type="button"
                 onClick={retry}
-                className="mt-3 rounded-lg border border-gray-300 px-4 py-1.5 text-sm text-gray-700 transition hover:bg-gray-50"
+                className="mt-3 rounded-full border border-hairline px-4 py-1.5 text-sm text-gray-600 transition hover:bg-canvas-soft-2 hover:text-ink"
               >
                 再试一次
               </button>
