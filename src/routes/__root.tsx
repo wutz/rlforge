@@ -13,19 +13,29 @@ export const Route = createRootRoute({
         content:
           '面向新手的 LLM 强化学习动手路径：在一张 RTX 5090 上从零手写 GRPO 并跑通训练，再上 TRL 框架，对照 slime 与 Miles 的工业级设计。含显存账本、优势演示与时间估算三个交互计算器。',
       },
-      { name: 'theme-color', content: '#fafafa' },
     ],
     links: [
       { rel: 'stylesheet', href: appCss },
       { rel: 'icon', href: '/logo.svg', type: 'image/svg+xml' },
+      /*
+       * Geist / Geist Mono —— DESIGN.md 指定的两张字面。
+       * Google Fonts 按 unicode-range 分片，中文命中不到 latin 子集，
+       * 所以正文汉字仍走系统字体，不会为此多下字形。
+       */
+      { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
+      { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossOrigin: 'anonymous' },
+      {
+        rel: 'stylesheet',
+        href: 'https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap',
+      },
     ],
   }),
   component: RootLayout,
 })
 
-/* 导航是界面尺度：6px 圆角、14px 字，不跟内容卡片的 8/12px 混用 */
+/* 导航项：中性态，选中只靠灰底 —— 主题色留给「状态」，不参与导航 */
 const navLink =
-  'shrink-0 rounded-ui px-2.5 py-1.5 text-sm text-body transition-colors hover:bg-canvas-soft-2 hover:text-ink sm:px-3'
+  'shrink-0 rounded-md px-2.5 py-1.5 text-gray-600 transition hover:bg-gray-100 hover:text-gray-900 sm:px-3'
 
 function RootLayout() {
   return (
@@ -33,37 +43,28 @@ function RootLayout() {
       <head>
         <HeadContent />
       </head>
-      <body className="min-h-screen bg-canvas-soft font-sans text-ink antialiased">
-        <header className="sticky top-0 z-20 border-b border-hairline bg-canvas/80 backdrop-blur-md">
-          <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-3 px-4 sm:px-6">
-            <Link to="/" className="group flex min-w-0 shrink-0 items-center gap-2.5">
-              <img
-                src="/logo.svg"
-                alt=""
-                width={28}
-                height={28}
-                className="h-7 w-7 shrink-0 transition-transform duration-200 group-hover:scale-105"
-              />
-              <span className="text-[0.9375rem] font-semibold tracking-tight text-ink">
-                RLforge
-              </span>
-              <span className="eyebrow hidden whitespace-nowrap sm:inline">
-                单卡 5090 · RL 锻造场
+      <body className="min-h-screen bg-gray-50 font-sans text-gray-900 antialiased">
+        <header className="sticky top-0 z-20 border-b border-gray-200 bg-white/80 backdrop-blur-md">
+          <div className="mx-auto flex h-14 max-w-6xl items-center justify-between gap-2 px-3 sm:h-16 sm:px-4">
+            <Link to="/" className="flex min-w-0 shrink-0 items-center gap-2.5">
+              <img src="/logo.svg" alt="" width={28} height={28} className="h-7 w-7 shrink-0" />
+              <span className="text-[15px] font-semibold tracking-tight">RLforge</span>
+              <span className="hidden border-l border-gray-200 pl-2.5 text-xs text-gray-500 sm:inline">
+                单卡 5090 的 RL 锻造场
               </span>
             </Link>
-
-            <nav className="-mr-1 flex items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <nav className="-mr-1 flex items-center gap-0.5 text-sm">
               <Link
                 to="/"
                 activeOptions={{ exact: true }}
-                activeProps={{ className: 'bg-brand-50! font-medium text-brand-700!' }}
+                activeProps={{ className: '!bg-gray-100 !text-gray-900 font-medium' }}
                 className={navLink}
               >
                 路径
               </Link>
               <Link
                 to="/labs"
-                activeProps={{ className: 'bg-brand-50! font-medium text-brand-700!' }}
+                activeProps={{ className: '!bg-gray-100 !text-gray-900 font-medium' }}
                 className={navLink}
               >
                 实验与闯关
@@ -72,29 +73,32 @@ function RootLayout() {
                 href="https://wutz.dev/"
                 target="_blank"
                 rel="noreferrer"
-                className="ml-1 hidden shrink-0 rounded-ui border border-hairline px-2.5 py-1.5 text-sm font-medium text-ink transition-colors hover:bg-canvas-soft-2 sm:inline-block"
+                className="ml-1 shrink-0 rounded-md border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-700 transition hover:border-gray-300 hover:bg-gray-50 sm:px-3"
               >
-                wutz.dev ↗
+                wutz.dev <span className="text-gray-400">↗</span>
               </a>
             </nav>
           </div>
         </header>
 
-        <main className="mx-auto max-w-6xl px-4 py-10 sm:px-6 sm:py-14">
+        <main className="mx-auto max-w-6xl px-3 py-6 sm:px-4 sm:py-10">
           <Outlet />
         </main>
 
-        <footer className="mt-20 border-t border-hairline bg-canvas sm:mt-28">
-          <div className="mx-auto max-w-6xl px-4 py-12 sm:px-6">
-            <div className="eyebrow">关于本站</div>
-            <p className="mt-3 max-w-3xl text-sm leading-relaxed text-body">
-              RLforge · 面向新手的 LLM 强化学习动手路径。所有实验以单张 RTX 5090（32GB）为基准校准；
-              框架部分实跑 TRL + vLLM，架构对照参考{' '}
+        <footer className="mt-16 border-t border-gray-200 bg-white sm:mt-24">
+          <div className="mx-auto max-w-6xl px-3 py-10 sm:px-4">
+            <div className="flex items-center gap-2.5">
+              <img src="/logo.svg" alt="" width={20} height={20} className="h-5 w-5 shrink-0" />
+              <span className="text-sm font-medium text-gray-900">RLforge</span>
+              <span className="font-mono text-[11px] text-gray-500">单卡 5090 的 RL 锻造场</span>
+            </div>
+            <p className="mt-4 max-w-3xl text-xs leading-relaxed text-gray-500">
+              所有实验以单张 RTX 5090（32GB）为基准校准；框架部分实跑 TRL + vLLM，架构对照参考{' '}
               <a
                 href="https://thudm.github.io/slime/"
                 target="_blank"
                 rel="noreferrer"
-                className="text-ink underline decoration-hairline-strong underline-offset-3 transition-colors hover:decoration-current"
+                className="transition hover:text-gray-900"
               >
                 slime
               </a>{' '}
@@ -103,34 +107,13 @@ function RootLayout() {
                 href="https://miles.radixark.com/docs"
                 target="_blank"
                 rel="noreferrer"
-                className="text-ink underline decoration-hairline-strong underline-offset-3 transition-colors hover:decoration-current"
+                className="transition hover:text-gray-900"
               >
                 Miles
               </a>
               。
             </p>
-            <p className="mt-2 text-sm text-mute">学习进度保存在本地浏览器，换设备不同步。</p>
-            <div className="mt-8 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-hairline pt-6 text-sm text-mute">
-              <a href="https://wutz.dev/" target="_blank" rel="noreferrer" className="hover:text-ink">
-                wutz.dev
-              </a>
-              <a
-                href="https://storpath.wutz.dev/"
-                target="_blank"
-                rel="noreferrer"
-                className="hover:text-ink"
-              >
-                storpath
-              </a>
-              <a
-                href="https://netpath.wutz.dev/"
-                target="_blank"
-                rel="noreferrer"
-                className="hover:text-ink"
-              >
-                netpath
-              </a>
-            </div>
+            <p className="mt-1.5 text-xs text-gray-500">学习进度保存在本地浏览器，换设备不同步。</p>
           </div>
         </footer>
 

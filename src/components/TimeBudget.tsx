@@ -15,14 +15,14 @@ const DEFAULTS: TimeInput = {
 }
 
 const inputCls =
-  'w-full rounded-ui border border-hairline bg-canvas px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-brand-500 focus:ring-2 focus:ring-brand-100'
+  'w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 transition focus:border-brand-500'
 
 function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
     <label className="block">
-      <span className="mb-1.5 block text-xs font-medium text-body">{label}</span>
+      <span className="mb-1.5 block text-xs font-medium text-gray-700">{label}</span>
       {children}
-      {hint && <span className="mt-1.5 block text-[11px] leading-snug text-mute">{hint}</span>}
+      {hint && <span className="mt-1 block text-[11px] text-gray-500">{hint}</span>}
     </label>
   )
 }
@@ -38,31 +38,32 @@ export function TimeBudget() {
   const set = <K extends keyof TimeInput>(key: K, value: TimeInput[K]) =>
     setInput((prev) => ({ ...prev, [key]: value }))
 
+  /* 三段时间的颜色是有含义的（哪一段最费），沿用显存账本那三色里的两色 + 中性 */
   const parts = [
     { label: '采样', seconds: result.genSeconds, color: 'bg-violet-500' },
-    { label: '训练', seconds: result.trainSeconds, color: 'bg-teal-500' },
-    { label: '同步与切换', seconds: result.overheadSeconds, color: 'bg-hairline-strong' },
+    { label: '训练', seconds: result.trainSeconds, color: 'bg-brand-600' },
+    { label: '同步与切换', seconds: result.overheadSeconds, color: 'bg-gray-400' },
   ]
 
   return (
-    <section className="my-7 overflow-hidden rounded-xl border border-hairline bg-canvas shadow-card">
-      <header className="flex items-center justify-between gap-3 border-b border-hairline bg-canvas-soft px-4 py-2.5">
-        <div className="flex min-w-0 items-center gap-3">
-          <span className="eyebrow shrink-0 text-body">计算器</span>
-          <span className="truncate text-sm font-medium tracking-tight text-ink">
-            一次实验要跑多久
+    <section className="my-6 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-e2">
+      <header className="flex items-center justify-between gap-3 border-b border-gray-100 bg-gray-50 px-4 py-2.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="shrink-0 rounded border border-brand-200 bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700">
+            计算器
           </span>
+          <span className="truncate text-sm font-medium text-gray-800">一次实验要跑多久</span>
         </div>
         <button
           type="button"
           onClick={() => setInput(DEFAULTS)}
-          className="shrink-0 font-mono text-[11px] text-mute transition-colors hover:text-ink"
+          className="shrink-0 text-xs text-gray-500 transition hover:text-gray-900"
         >
           重置
         </button>
       </header>
 
-      <div className="grid gap-6 px-4 py-5 sm:px-5 md:grid-cols-2">
+      <div className="grid gap-5 px-4 py-4 md:grid-cols-2">
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <Field label="训练步数">
@@ -107,7 +108,7 @@ export function TimeBudget() {
             </Field>
           </div>
 
-          <div className="rounded-ui border border-amber-200 bg-amber-50 px-3.5 py-3">
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5">
             <div className="text-[11px] font-medium text-amber-900">
               下面两个数必须用你自己机器上测出来的
             </div>
@@ -131,7 +132,7 @@ export function TimeBudget() {
                 />
               </Field>
             </div>
-            <div className="mt-2 text-[11px] leading-relaxed text-amber-800">
+            <div className="mt-2 text-[11px] leading-relaxed text-amber-900/80">
               默认值是 Qwen3-0.6B 在单卡 5090 上的一个量级参考，不同 max_model_len、
               并发和 CUDA graph 设置能差三倍。L0「第一次推理」那一节就是去测这个数。
             </div>
@@ -162,20 +163,21 @@ export function TimeBudget() {
         </div>
 
         <div className="space-y-3">
-          <div className="rounded-lg border border-hairline bg-canvas-soft px-4 py-5 text-center">
-            <div className="eyebrow">预计墙钟时间</div>
-            <div className="mt-2 text-display-lg tabular-nums text-ink">
+          {/* 这个数字没有「好 / 坏」语义，所以走中性底 —— 语义色留给显存那个装不装得下 */}
+          <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-3 text-center">
+            <div className="text-xs font-medium text-gray-600">预计墙钟时间</div>
+            <div className="mt-1 font-mono text-2xl font-medium tracking-tight text-gray-900">
               {formatDuration(result.totalSeconds)}
             </div>
-            <div className="mt-1.5 text-xs text-mute">
+            <div className="mt-1 text-[11px] leading-snug text-gray-500">
               每步 {result.stepSeconds.toFixed(1)} 秒 · 共生成 {formatCompact(result.totalTokens)}{' '}
               token
             </div>
           </div>
 
           <div>
-            <div className="mb-2 text-xs font-medium text-body">单步时间构成</div>
-            <div className="flex h-2.5 overflow-hidden rounded-full bg-canvas-soft-2">
+            <div className="mb-2 text-xs font-medium text-gray-700">单步时间构成</div>
+            <div className="flex h-2.5 overflow-hidden rounded-full bg-gray-100">
               {parts.map((part) => (
                 <div
                   key={part.label}
@@ -188,11 +190,11 @@ export function TimeBudget() {
             <div className="mt-2 space-y-1">
               {parts.map((part) => (
                 <div key={part.label} className="flex items-center justify-between text-xs">
-                  <span className="flex items-center gap-1.5 text-body">
+                  <span className="flex items-center gap-1.5 text-gray-600">
                     <span className={`h-2 w-2 rounded-full ${part.color}`} />
                     {part.label}
                   </span>
-                  <span className="font-mono tabular-nums text-ink">
+                  <span className="font-mono tabular-nums text-gray-900">
                     {part.seconds.toFixed(1)}s ·{' '}
                     {((part.seconds / result.stepSeconds) * 100).toFixed(0)}%
                   </span>
@@ -201,21 +203,21 @@ export function TimeBudget() {
             </div>
           </div>
 
-          <dl className="divide-y divide-hairline rounded-lg border border-hairline text-sm">
+          <dl className="divide-y divide-gray-100 rounded-lg border border-gray-200 px-3 text-sm">
             {[
               ['每步序列数', `${input.promptsPerStep * input.groupSize} 条`],
               ['每步 token 数', formatCompact(result.tokensPerStep)],
               ['采样占比', `${(result.genShare * 100).toFixed(0)}%`],
             ].map(([label, value]) => (
-              <div key={label} className="flex items-center justify-between px-3.5 py-2.5">
-                <dt className="text-body">{label}</dt>
-                <dd className="font-mono text-xs tabular-nums text-ink">{value}</dd>
+              <div key={label} className="flex items-center justify-between py-2">
+                <dt className="text-gray-600">{label}</dt>
+                <dd className="font-mono text-xs tabular-nums text-gray-900">{value}</dd>
               </div>
             ))}
           </dl>
 
           {result.advice.length > 0 && (
-            <ul className="space-y-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3.5 py-3 text-xs leading-relaxed text-blue-900">
+            <ul className="space-y-1.5 rounded-lg border border-brand-200 bg-brand-50 px-3 py-2.5 text-xs leading-relaxed text-brand-900">
               {result.advice.map((a) => (
                 <li key={a} className="flex gap-1.5">
                   <span className="shrink-0">→</span>

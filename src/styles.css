@@ -1,122 +1,87 @@
-@import "@fontsource-variable/inter";
-@import "@fontsource-variable/jetbrains-mono";
 @import "tailwindcss";
 
 /*
- * ============================================================
- *  设计令牌 —— 对齐 DESIGN.md（Vercel 设计语言）
- * ============================================================
+ * 设计语言见仓库根目录 DESIGN.md（Vercel 风格：近白画布 + 墨黑主色 + 发丝分隔线，
+ * 装饰克制、层级靠留白和字重而不是靠颜色）。下面这一段是它的 token 落地。
  *
- * 表面走四档梯度：canvas(白卡) / canvas-soft(页面底色) / canvas-soft-2(内嵌区)
- * / ink(极性翻转的深色段)。文字三档：ink / body / mute。分隔线只有 hairline
- * 一档，强调时才用 hairline-strong。
- *
- * 主行动色是 ink（近黑），不是品牌色 —— 这是这套语言最关键的一条：
- * 黑色按钮就是转化目标。品牌靛蓝退到「链接 / 选中 / 当前位置」这一层，
- * 承担站点身份识别（与 storpath 30°、netpath 205° 拉开色相距离），
- * 而不是到处抢注意力。
+ * 与 netpath / storpath 同一套实现：token 命名、灰阶、层次、主题色分工都对齐，
+ * 三个站放在一起是同一个家族。站与站之间只差主题色的色相。
  */
 @theme {
-  /* 字体：中文回退覆盖 PingFang / 思源黑体 / 微软雅黑，避免系统兜底字体在深浅两种语境下观感漂移 */
+  /* ---------- 字体 ----------
+   * Geist / Geist Mono 走 Google Fonts 的 latin 子集，中文自然落到系统字面上，
+   * 所以正文汉字不会为了这套字体多下一个字节。
+   */
   --font-sans:
-    "Inter Variable", ui-sans-serif, system-ui, -apple-system, "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    'Geist', 'Inter', system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Noto Sans SC', sans-serif;
   --font-mono:
-    "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, Monaco,
-    "PingFang SC", monospace;
+    'Geist Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, 'Cascadia Mono',
+    monospace;
 
-  /* ---------- 文字与表面 ---------- */
-  --color-ink: #171717;
-  --color-body: #4d4d4d;
-  --color-mute: #888888;
-  --color-hairline: #ebebeb;
-  --color-hairline-strong: #a1a1a1;
-  --color-canvas: #ffffff;
-  --color-canvas-soft: #fafafa;
-  --color-canvas-soft-2: #f5f5f5;
-
-  /*
-   * 靛蓝 —— rlforge 的品牌色，用作链接 / 当前位置 / 强调，不做主按钮。
+  /* ---------- 中性色 ----------
+   * Tailwind 自带的 gray 偏蓝，和 DESIGN.md 的纯灰混在一页里会发闷，
+   * 所以整条 gray 直接换成设计稿那把纯中性灰 —— 站内的
+   * text-gray-700 / border-gray-200 / bg-gray-50 无需改写就落到新阶上。
    *
-   * 色相取 266~275：与 storpath(30) 和 netpath(205) 都拉开足够距离，
-   * 三个站放在一起不会认错。
-   *
-   * brand-600 的亮度压到 0.48：它要承载「白底链接」和「浅底强调文字」
-   * 两种用法，对白色的对比度 6.9，稳过 WCAG AA。
-   *
-   * 三个浅色阶的彩度是按 sRGB 色域上限反解出来的（0.013 / 0.032 / 0.055），
-   * 不是随手填的。蓝色系在 sRGB 里蓝通道最先饱和，浅色阶按视觉直觉给
-   * 0.05 这种值会溢出色域、被浏览器 clamp —— 结果是实际渲染的彩度比写的低、
-   * 色相还会偏。这里每档都留了 5% 余量。
+   * 400 只用于边框、图标一类装饰；承载信息的小字最低到 500
+   * （#767676 是白底上仍满足 WCAG AA 4.5:1 的最浅一档）。
    */
-  --color-brand-50: oklch(0.97 0.013 275);
-  --color-brand-100: oklch(0.93 0.032 272);
-  --color-brand-200: oklch(0.88 0.055 270);
-  --color-brand-300: oklch(0.83 0.06 269);
-  --color-brand-400: oklch(0.7 0.11 269);
-  --color-brand-500: oklch(0.58 0.19 270);
-  --color-brand-600: oklch(0.48 0.2 268);
-  --color-brand-700: oklch(0.41 0.18 266);
-  --color-brand-800: oklch(0.33 0.15 265);
-  --color-brand-900: oklch(0.25 0.12 264);
+  --color-gray-50: #fafafa; /* canvas-soft：页面底色 */
+  --color-gray-100: #f2f2f2;
+  --color-gray-200: #ebebeb; /* hairline：分隔线与卡片描边 */
+  --color-gray-300: #dcdcdc;
+  --color-gray-400: #a1a1a1; /* hairline-strong：仅装饰 */
+  --color-gray-500: #767676; /* 小字下限，AA 合格 */
+  --color-gray-600: #5c5c5c;
+  --color-gray-700: #4d4d4d; /* body：正文 */
+  --color-gray-800: #333333;
+  --color-gray-900: #171717; /* ink：标题、主按钮 */
+  --color-gray-950: #0a0a0a;
 
-  /*
-   * ---------- 排版阶梯 ----------
+  /* ---------- 主题色 ----------
+   * 靛蓝。按 DESIGN.md 的分工，墨黑负责「动作」（主按钮），
+   * 主题色只负责「状态」—— 链接、选中态、进度条、焦点圈。
    *
-   * 负字距是这套语言的声音，但 DESIGN.md 给的 -2.4px/48px（-0.05em）是照
-   * 拉丁字母定的。中文方块字挤到 -0.05em 会字贴字，所以这里统一按 em 给，
-   * 幅度收到一半左右：越大的字号负得越多，正文回到 0。
-   * 字重上限 600 —— 不用 700，这是这套系统读起来比一般站点更稳的原因。
-   */
-  --text-display-xl: 2.5rem;
-  --text-display-xl--line-height: 1.15;
-  --text-display-xl--letter-spacing: -0.025em;
-  --text-display-xl--font-weight: 600;
-
-  --text-display-lg: 2rem;
-  --text-display-lg--line-height: 1.2;
-  --text-display-lg--letter-spacing: -0.022em;
-  --text-display-lg--font-weight: 600;
-
-  --text-display-md: 1.5rem;
-  --text-display-md--line-height: 1.3;
-  --text-display-md--letter-spacing: -0.02em;
-  --text-display-md--font-weight: 600;
-
-  --text-display-sm: 1.25rem;
-  --text-display-sm--line-height: 1.4;
-  --text-display-sm--letter-spacing: -0.015em;
-  --text-display-sm--font-weight: 600;
-
-  --text-body-lg: 1.125rem;
-  --text-body-lg--line-height: 1.75;
-
-  /*
-   * ---------- 立面 ----------
+   * 色相 268°：与 storpath(30°)、netpath(203°) 各差 122° 与 65°，
+   * 三个站的主题色放在一起认得出谁是谁。
    *
-   * 叠加多层小偏移伪造自然光，而不是甩一发 8px 模糊的通用阴影。
-   * 卡片边缘的「脆」由 1px hairline 边框负责（不写进阴影，免得和
-   * border 叠成两条线）。
+   * chroma 取 sRGB 色域上限的 80%。不贴到 98% 是因为靛蓝在 sRGB 里的
+   * 天花板很高（L=0.50 时能到 0.28），真顶上去会得到一块电光蓝，
+   * 和这套「克制」的观感打架 —— netpath 的青蓝之所以看着安静，
+   * 是因为青色本身天花板只有 0.08，不是因为它没贴顶。
+   *
+   * 两个关键档按对比度反解，和 netpath 的用法一一对应：
+   *   600 = #4668e4，白底 4.8:1，填充用（进度条、圆点）
+   *   700 = #2e4ae0，白底 6.6:1，文字用（链接、强调）
    */
-  --shadow-soft: 0 1px 1px rgb(0 0 0 / 0.02), 0 2px 2px rgb(0 0 0 / 0.04);
-  --shadow-card: 0 2px 2px rgb(0 0 0 / 0.04), 0 8px 8px -8px rgb(0 0 0 / 0.05);
-  --shadow-lift: 0 2px 2px rgb(0 0 0 / 0.04), 0 8px 16px -4px rgb(0 0 0 / 0.07);
-  --shadow-modal:
-    0 1px 1px rgb(0 0 0 / 0.02), 0 8px 16px -4px rgb(0 0 0 / 0.06),
-    0 24px 32px -8px rgb(0 0 0 / 0.09);
+  --color-brand-50: oklch(0.976 0.009 268);
+  --color-brand-100: oklch(0.945 0.021 268);
+  --color-brand-200: oklch(0.898 0.039 268);
+  --color-brand-300: oklch(0.836 0.065 268);
+  --color-brand-400: oklch(0.72 0.116 268);
+  --color-brand-500: oklch(0.63 0.158 268);
+  --color-brand-600: oklch(0.563 0.192 268);
+  --color-brand-700: oklch(0.495 0.227 268);
+  --color-brand-800: oklch(0.425 0.227 268);
+  --color-brand-900: oklch(0.365 0.195 268);
 
-  /* ---------- 圆角 ---------- */
-  /* 两个尺度并存但不混用：6px 是界面级（导航按钮、表单），8/12px 是内容卡片级 */
-  --radius-ui: 0.375rem;
+  /* ---------- 层次 ----------
+   * DESIGN.md 的层次是「叠加多层极淡投影」，不是一记 8px 大虚化。
+   * 这里只留投影部分，描边继续交给 border-gray-200，避免和 inset 环重影。
+   */
+  --shadow-e1: 0 1px 1px #00000005;
+  --shadow-e2: 0 1px 1px #00000005, 0 2px 2px #0000000a;
+  --shadow-e3: 0 2px 2px #0000000a, 0 8px 8px -8px #0000000a;
+  --shadow-e4: 0 2px 2px #0000000a, 0 8px 16px -4px #0000000a;
+  --shadow-e5: 0 1px 1px #00000005, 0 8px 16px -4px #0000000a, 0 24px 32px -8px #0000000f;
 }
 
 html {
   /* 横屏转竖屏时 iOS 会自作主张放大字号 */
   -webkit-text-size-adjust: 100%;
-  /* 顶栏是 sticky 的，锚点跳转要留出它的高度 */
+  /* 顶栏是 sticky 的，锚点跳转要留出它的高度（顶栏 4rem + 一点余量） */
   scroll-padding-top: 5rem;
-  /* 渐进滚动：锚点跳转顺手且不跳眼 */
-  scroll-behavior: smooth;
 }
 
 /*
@@ -125,25 +90,21 @@ html {
  */
 body {
   overflow-x: clip;
-  /* 大字号正文给中英文混排更好的字形渲染 */
-  text-rendering: optimizeLegibility;
 }
 
-/* 选中反白直接用 ink —— 极性翻转本身就是这套语言的强调手段 */
+/* DESIGN.md：选中态是墨底浅字 */
 ::selection {
-  background: var(--color-ink);
+  background: var(--color-gray-900);
   color: #f2f2f2;
 }
 
 /*
- * 键盘可达性：链接与按钮统一 focus 环，用品牌色（ink 环在深色按钮上看不见）。
- * 表单控件（input/select）已有各自的 focus:ring，这里不动它们；
- * :where 压低优先级，便于组件里更具体的样式覆盖。
+ * 键盘焦点圈。站内大量可点元素只有 hover 没有焦点态，
+ * 纯键盘走一遍会完全看不出光标在哪。
  */
-:where(a, button):focus-visible {
-  outline: 2px solid var(--color-brand-500);
+:focus-visible {
+  outline: 2px solid var(--color-brand-600);
   outline-offset: 2px;
-  border-radius: var(--radius-ui);
 }
 
 /* 细滚动条：代码块与终端里出现横向滚动时，视觉上不喧宾夺主 */
@@ -160,49 +121,16 @@ body {
   border-radius: 9999px;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: var(--color-hairline-strong);
+  background: var(--color-gray-400);
 }
 *::-webkit-scrollbar-track {
   background: transparent;
 }
 
-/*
- * 眉标（eyebrow）：小标签一律走等宽体。
- * 「等宽 = 技术层的声音」是这套语言的分工 —— 段落永远不用等宽，
- * 小标签 / 表头 / 代码永远用。
- */
-.eyebrow {
-  font-family: var(--font-mono);
-  font-size: 0.6875rem;
-  line-height: 1rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--color-mute);
-}
-
-/*
- * 首屏的网格渐变。整站唯一的装饰系统：蓝→青、紫→品红、珊瑚→琥珀
- * 三对色一起当一块大氛围底，只在首屏尺度出现，不缩成图标、不裁成单色。
- */
-.mesh {
-  position: absolute;
-  inset: -20% -10% auto -10%;
-  height: 26rem;
-  pointer-events: none;
-  background:
-    radial-gradient(38rem 20rem at 10% 30%, rgb(0 124 240 / 0.5), transparent 65%),
-    radial-gradient(30rem 18rem at 32% 12%, rgb(0 223 216 / 0.45), transparent 65%),
-    radial-gradient(34rem 20rem at 58% 26%, rgb(121 40 202 / 0.42), transparent 65%),
-    radial-gradient(26rem 16rem at 80% 14%, rgb(255 0 128 / 0.36), transparent 65%),
-    radial-gradient(24rem 15rem at 96% 34%, rgb(249 203 40 / 0.34), transparent 65%);
-  filter: blur(40px);
-  opacity: 0.55;
-  mask-image: linear-gradient(to bottom, #000 15%, transparent 85%);
-}
-
 /* Shiki 双主题：默认亮色，后续如接入暗色模式再切换变量 */
 .shiki {
   padding: 1rem 1.125rem;
+  font-family: var(--font-mono);
   font-size: 0.8125rem;
   line-height: 1.7;
 }
@@ -210,20 +138,24 @@ body {
 /* MDX 正文排版（不引 typography 插件，保持依赖精简） */
 .lesson-body {
   line-height: 1.85;
-  color: var(--color-body);
+  color: var(--color-gray-700);
   /* 长路径、长 URL 不许顶破容器 */
   overflow-wrap: break-word;
 }
 .lesson-body > * + * {
   margin-top: 1rem;
 }
+/*
+ * 标题一律 600 收顶 —— DESIGN.md 明确写了这套几何无衬线不上 700，
+ * 层级差交给字号、字距和上方留白。
+ */
 .lesson-body h2 {
-  margin-top: 2.75rem;
+  margin-top: 2.5rem;
   font-size: 1.375rem;
   font-weight: 600;
-  letter-spacing: -0.02em;
-  color: var(--color-ink);
-  border-bottom: 1px solid var(--color-hairline);
+  letter-spacing: -0.03em;
+  color: var(--color-gray-900);
+  border-bottom: 1px solid var(--color-gray-200);
   padding-bottom: 0.5rem;
 }
 .lesson-body h3 {
@@ -231,11 +163,7 @@ body {
   font-size: 1.0625rem;
   font-weight: 600;
   letter-spacing: -0.015em;
-  color: var(--color-ink);
-}
-.lesson-body strong {
-  font-weight: 600;
-  color: var(--color-ink);
+  color: var(--color-gray-900);
 }
 .lesson-body ul,
 .lesson-body ol {
@@ -248,20 +176,25 @@ body {
   list-style: decimal;
 }
 .lesson-body li::marker {
-  color: var(--color-hairline-strong);
+  color: var(--color-gray-400);
 }
 .lesson-body li + li {
   margin-top: 0.375rem;
 }
+.lesson-body strong {
+  font-weight: 600;
+  color: var(--color-gray-900);
+}
 .lesson-body a {
-  color: var(--color-brand-600);
+  color: var(--color-brand-700);
   text-decoration: underline;
   text-decoration-color: var(--color-brand-200);
-  text-underline-offset: 3px;
-  transition: text-decoration-color 0.15s ease;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  transition: text-decoration-color 150ms;
 }
 .lesson-body a:hover {
-  text-decoration-color: currentcolor;
+  text-decoration-color: var(--color-brand-600);
 }
 /*
  * 代码块。没标语言的 ``` 块 shiki 不会处理，拿不到 .shiki 类，
@@ -274,35 +207,32 @@ body {
   max-width: 100%;
   overflow-x: auto;
   overscroll-behavior-x: contain;
-  border: 1px solid var(--color-hairline);
+  border: 1px solid var(--color-gray-200);
   border-radius: 0.5rem;
+  box-shadow: var(--shadow-e1);
 }
 .lesson-body pre:not([class]) {
-  background: var(--color-canvas-soft-2);
-  color: var(--color-ink);
+  background: #fff;
+  color: var(--color-gray-800);
   padding: 1rem 1.125rem;
+  font-family: var(--font-mono);
   font-size: 0.8125rem;
   line-height: 1.7;
 }
 /* 行内代码——只作用于不在 pre 里的 code */
 .lesson-body :not(pre) > code {
-  background: var(--color-canvas-soft-2);
-  color: var(--color-ink);
+  background: var(--color-gray-100);
+  color: var(--color-gray-800);
   padding: 0.1rem 0.35rem;
   border-radius: 0.25rem;
+  font-family: var(--font-mono);
   font-size: 0.85em;
 }
-/* 极性翻转的提示块（Callout type="gpu"）：正文里的链接与行内代码要跟着反白 */
-.lesson-body .callout-invert a {
-  color: #fff;
-  text-decoration-color: rgb(255 255 255 / 0.4);
-}
-.lesson-body .callout-invert strong {
-  color: #fff;
-}
-.lesson-body .callout-invert :not(pre) > code {
-  background: rgb(255 255 255 / 0.12);
-  color: #fff;
+/* 正文里的裸 markdown 图片，兜底不许撑破容器 */
+.lesson-body img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.5rem;
 }
 .lesson-body table {
   width: 100%;
@@ -315,28 +245,27 @@ body {
 }
 .lesson-body th,
 .lesson-body td {
-  border: 1px solid var(--color-hairline);
+  border: 1px solid var(--color-gray-200);
   padding: 0.5rem 0.75rem;
   text-align: left;
   vertical-align: top;
 }
-/* 表头走等宽小字：表格是数据，属于技术层 */
+/* 表头走 mono —— DESIGN.md 里技术标签统一是等宽的声音 */
 .lesson-body th {
-  background: var(--color-canvas-soft);
+  background: var(--color-gray-50);
   font-family: var(--font-mono);
-  font-size: 0.75rem;
-  font-weight: 400;
-  letter-spacing: 0.02em;
-  color: var(--color-body);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--color-gray-800);
   white-space: nowrap;
 }
 .lesson-body blockquote {
-  border-left: 2px solid var(--color-hairline-strong);
-  padding: 0.125rem 0 0.125rem 1rem;
-  color: var(--color-mute);
+  border-left: 2px solid var(--color-gray-300);
+  padding-left: 1rem;
+  color: var(--color-gray-600);
 }
 .lesson-body hr {
-  border-color: var(--color-hairline);
+  border-color: var(--color-gray-200);
   margin: 2rem 0;
 }
 
@@ -350,11 +279,6 @@ body {
   select,
   textarea {
     font-size: 16px;
-  }
-
-  .mesh {
-    height: 18rem;
-    filter: blur(32px);
   }
 
   .lesson-body {

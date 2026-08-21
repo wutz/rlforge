@@ -10,22 +10,29 @@
 
 - **Bun** + **Vite 8** + **TanStack Start / Router**（文件路由，SSR）
 - **React 19** + **Tailwind 4**（`@theme` 里定义全部设计令牌，见下）
+- **Geist / Geist Mono** 走 Google Fonts，无自托管字体依赖
 - **MDX** 写正文，`@shikijs/rehype` 做代码高亮，`remark-gfm` + `rehype-slug`
 - **Cloudflare Workers** 部署（wrangler，custom domain）
 - 进度存 `localStorage`，无账号体系，无后端
 
 ## 设计系统
 
-视觉规范在 [`DESIGN.md`](./DESIGN.md)（`npx getdesign@latest add vercel` 生成），令牌全部落在
-`src/styles.css` 的 `@theme` 里，改设计只改那一处：
+视觉规范在 [`DESIGN.md`](./DESIGN.md)（`npx getdesign@latest add vercel` 生成）。
+**token 落地与 [netpath](https://netpath.wutz.dev/)、storpath 完全对齐** —— 命名、灰阶、
+层次、主题色分工都一样，三个站放在一起是同一个家族，站与站之间只差主题色的色相。
+全部 token 在 `src/styles.css` 的 `@theme` 里，改设计只改那一处：
 
-- **表面四档**：`canvas`(白卡) / `canvas-soft`(页面底色) / `canvas-soft-2`(内嵌区) / `ink`(极性翻转的深色段)
-- **文字三档**：`ink` / `body` / `mute`；分隔线只有 `hairline` 一档
-- **主行动色是 ink（近黑）**，不是品牌色 —— 黑色按钮就是转化目标
-- **品牌靛蓝**退到「链接 / 当前位置 / 聚焦」这一层，承担站点身份识别（与 storpath 30°、netpath 205° 拉开色相）
-- **排版**：`text-display-xl/lg/md/sm` 带负字距，字重上限 600；小标签 / 表头 / 代码一律等宽体（`.eyebrow`）
-- **装饰只有一处**：首页的多色网格渐变（`.mesh`），只在首屏尺度出现
-- **立面**：`shadow-soft / card / lift / modal` 四档叠加式阴影 + 1px hairline 边框，不用单发重投影
+- **字体**：Geist / Geist Mono（Google Fonts 的 latin 子集，中文落系统字面，不为此多下字形）
+- **中性色**：整条 `gray-*` 换成设计稿那把纯中性灰（`gray-50` 页面底 → `gray-900` 墨黑）。
+  承载信息的小字最低到 `gray-500`（`#767676`，白底 AA 合格）
+- **分工**：墨黑 `gray-900` 负责「动作」（主按钮），主题色只负责「状态」——
+  链接、选中态、进度条、焦点圈
+- **主题色**：靛蓝 268°，与 storpath(30°)、netpath(203°) 各差 122° / 65°。
+  chroma 取 sRGB 上限的 80%，`brand-600` 白底 4.8:1 作填充、`brand-700` 6.6:1 作文字
+- **层次**：`shadow-e1` ~ `e5` 叠加式极淡投影，描边交给 `border-gray-200`，不叠 inset 环
+- **形状**：卡片 `rounded-xl`、内层 `rounded-lg`、按钮与表单 `rounded-md`
+- **装饰**：没有。层级靠留白和字重，不靠颜色；标题一律 600 收顶，不上 700
+- **阶段色**：只出现在等宽小角标和学习目标的圆点上，面积很小；成片浅色底一律换中性灰
 
 ## 开发
 

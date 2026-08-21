@@ -54,23 +54,25 @@ export function Quiz({
   }
 
   return (
-    <section className="my-7 overflow-hidden rounded-xl border border-hairline bg-canvas shadow-card">
-      <header className="flex items-center gap-3 border-b border-hairline bg-canvas-soft px-4 py-2.5">
-        <span className="eyebrow text-body">检查点</span>
-        <span className="font-mono text-[11px] text-mute">{multi ? '多选' : '单选'}</span>
+    <section className="my-6 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-e2">
+      <header className="flex items-center gap-2 border-b border-gray-100 bg-gray-50 px-4 py-2.5">
+        <span className="rounded border border-brand-200 bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700">
+          检查点
+        </span>
+        <span className="font-mono text-[11px] text-gray-500">{multi ? '多选' : '单选'}</span>
       </header>
 
-      <div className="px-4 py-4 sm:px-5 sm:py-5">
-        <p className="mb-4 font-medium tracking-tight text-ink">{question}</p>
+      <div className="px-4 py-4">
+        <p className="mb-3.5 font-medium text-gray-900">{question}</p>
 
         <ul className="space-y-2">
           {options.map((option, index) => {
             const chosen = picked.includes(index)
             const reveal = submitted
-            let cls = 'border-hairline hover:border-hairline-strong hover:bg-canvas-soft'
-            if (chosen && !reveal) cls = 'border-ink bg-canvas-soft-2'
-            if (reveal && option.correct) cls = 'border-teal-300 bg-teal-50'
-            if (reveal && chosen && !option.correct) cls = 'border-red-300 bg-red-50'
+            let cls = 'border-gray-200 hover:border-gray-400 hover:bg-gray-50'
+            if (chosen && !reveal) cls = 'border-gray-900 bg-gray-50'
+            if (reveal && option.correct) cls = 'border-emerald-300 bg-emerald-50'
+            if (reveal && chosen && !option.correct) cls = 'border-rose-300 bg-rose-50'
 
             return (
               <li key={index}>
@@ -78,18 +80,17 @@ export function Quiz({
                   type="button"
                   onClick={() => toggle(index)}
                   disabled={submitted}
-                  className={`w-full rounded-ui border px-3 py-2.5 text-left text-sm transition-colors ${cls} ${
+                  aria-pressed={chosen}
+                  className={`w-full rounded-md border px-3 py-2.5 text-left text-sm transition ${cls} ${
                     submitted ? 'cursor-default' : 'cursor-pointer'
                   }`}
                 >
-                  <span className="mr-2.5 font-mono text-xs text-mute">
+                  <span className="mr-2 font-mono text-xs text-gray-500">
                     {String.fromCharCode(65 + index)}
                   </span>
-                  <span className="text-ink">{option.text}</span>
+                  <span className="text-gray-800">{option.text}</span>
                   {reveal && chosen && !option.correct && option.feedback && (
-                    <span className="mt-1.5 block text-xs leading-relaxed text-red-800">
-                      {option.feedback}
-                    </span>
+                    <span className="mt-1.5 block text-xs text-rose-800">{option.feedback}</span>
                   )}
                 </button>
               </li>
@@ -102,25 +103,27 @@ export function Quiz({
             type="button"
             onClick={submit}
             disabled={!picked.length}
-            className="mt-5 rounded-ui bg-ink px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-body disabled:cursor-not-allowed disabled:bg-hairline disabled:text-mute"
+            className="mt-4 rounded-md bg-gray-900 px-4 py-2 text-sm font-medium text-white shadow-e1 transition hover:bg-gray-800 disabled:cursor-not-allowed disabled:bg-gray-300 disabled:shadow-none"
           >
             提交
           </button>
         ) : (
-          <div className="mt-5">
+          <div className="mt-4">
             <div
-              className={`rounded-ui border px-3.5 py-3 text-sm leading-relaxed ${
-                isCorrect ? 'border-teal-200 bg-teal-50 text-teal-900' : 'border-red-200 bg-red-50 text-red-900'
+              className={`rounded-md border px-3 py-2.5 text-sm ${
+                isCorrect
+                  ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                  : 'border-rose-200 bg-rose-50 text-rose-800'
               }`}
             >
               <strong className="font-medium">{isCorrect ? '答对了。' : '还不对。'}</strong>
-              {explain ? <div className="mt-1.5 text-body">{explain}</div> : null}
+              {explain ? <div className="mt-1.5 text-gray-700">{explain}</div> : null}
             </div>
             {!isCorrect && (
               <button
                 type="button"
                 onClick={retry}
-                className="mt-3 rounded-ui border border-hairline px-4 py-1.5 text-sm text-ink transition-colors hover:bg-canvas-soft-2"
+                className="mt-3 rounded-md border border-gray-200 px-4 py-1.5 text-sm text-gray-700 transition hover:border-gray-300 hover:bg-gray-50"
               >
                 再试一次
               </button>
