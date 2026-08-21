@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import type { ReactNode } from 'react'
 import {
   LORA_RANKS,
   MODELS,
@@ -9,6 +8,7 @@ import {
   planVram,
 } from '#/lib/vram'
 import { formatCompact, formatGiB } from '#/lib/units'
+import { Field, NoteList, Panel, Stat, inputCls } from './ui'
 
 const DEFAULTS: VramInput = {
   modelId: 'qwen3-0.6b',
@@ -24,28 +24,14 @@ const DEFAULTS: VramInput = {
   totalGiB: 32,
 }
 
-/* 表单：6px 圆角 + 发丝描边，聚焦时才把主题色请出来 */
-const inputCls =
-  'w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 transition focus:border-brand-500'
-
-function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
-  return (
-    <label className="block">
-      <span className="mb-1.5 block text-xs font-medium text-gray-700">{label}</span>
-      {children}
-      {hint && <span className="mt-1 block text-[11px] text-gray-500">{hint}</span>}
-    </label>
-  )
-}
-
 /*
- * 三块占用的颜色是有含义的（训练 / 参考 / 推理各吃多少），所以保留三色；
- * 主题色给主角「训练」，另两块借 emerald 与 violet —— 都不在阶段色里。
+ * 三块占用的颜色是有含义的（训练 / 参考 / 推理各吃多少），所以保留三色：
+ * 主题色给主角「训练」，另两块借 info 与 plum 两个语义槽。
  */
 const GROUP_COLOR = {
   train: 'bg-brand-600',
-  ref: 'bg-emerald-500',
-  infer: 'bg-violet-500',
+  ref: 'bg-info',
+  infer: 'bg-plum',
 } as const
 
 const GROUP_LABEL = {
@@ -64,24 +50,8 @@ export function VramBudget() {
   const maxLine = Math.max(...result.lines.map((l) => l.giB), 0.001)
 
   return (
-    <section className="my-6 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-e2">
-      <header className="flex items-center justify-between gap-3 border-b border-gray-100 bg-gray-50 px-4 py-2.5">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="shrink-0 rounded border border-brand-200 bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700">
-            计算器
-          </span>
-          <span className="truncate text-sm font-medium text-gray-800">RL 训练显存账本</span>
-        </div>
-        <button
-          type="button"
-          onClick={() => setInput(DEFAULTS)}
-          className="shrink-0 text-xs text-gray-500 transition hover:text-gray-900"
-        >
-          重置
-        </button>
-      </header>
-
-      <div className="grid gap-5 px-4 py-4 md:grid-cols-2">
+    <Panel eyebrow="Planner" title="RL 训练显存账本" onReset={() => setInput(DEFAULTS)}>
+      <div className="grid gap-5 px-4 py-4 sm:px-5 md:grid-cols-2">
         {/* ---------- 左：参数 ---------- */}
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
@@ -168,31 +138,31 @@ export function VramBudget() {
             </Field>
           </div>
 
-          <div className="space-y-2 rounded-lg border border-gray-200 bg-gray-50 px-3.5 py-3">
-            <label className="flex items-center gap-2.5 text-sm text-gray-700">
+          <div className="space-y-2 rounded-md bg-soft-2 px-3.5 py-3">
+            <label className="flex items-center gap-2.5 text-sm text-body">
               <input
                 type="checkbox"
                 checked={input.gradCheckpoint}
                 onChange={(e) => set('gradCheckpoint', e.target.checked)}
-                className="h-4 w-4 shrink-0 rounded border-gray-300 accent-brand-600"
+                className="h-4 w-4 shrink-0 accent-brand-600"
               />
               开梯度检查点
             </label>
-            <label className="flex items-center gap-2.5 text-sm text-gray-700">
+            <label className="flex items-center gap-2.5 text-sm text-body">
               <input
                 type="checkbox"
                 checked={input.refModel}
                 onChange={(e) => set('refModel', e.target.checked)}
-                className="h-4 w-4 shrink-0 rounded border-gray-300 accent-brand-600"
+                className="h-4 w-4 shrink-0 accent-brand-600"
               />
               常驻参考模型（算 KL 用）
             </label>
-            <label className="flex items-center gap-2.5 text-sm text-gray-700">
+            <label className="flex items-center gap-2.5 text-sm text-body">
               <input
                 type="checkbox"
                 checked={input.colocate}
                 onChange={(e) => set('colocate', e.target.checked)}
-                className="h-4 w-4 shrink-0 rounded border-gray-300 accent-brand-600"
+                className="h-4 w-4 shrink-0 accent-brand-600"
               />
               训推同卡（vLLM colocate）
             </label>
@@ -231,27 +201,19 @@ export function VramBudget() {
 
         {/* ---------- 右：结果 ---------- */}
         <div className="space-y-3">
-          <div
-            className={`rounded-lg border px-3 py-3 text-center ${
-              result.fits
-                ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
-                : 'border-rose-200 bg-rose-50 text-rose-900'
-            }`}
-          >
-            <div className="text-xs font-medium">{result.fits ? '装得下' : '装不下，会 OOM'}</div>
-            <div className="mt-1 font-mono text-2xl font-medium tracking-tight">
-              {formatGiB(result.totalGiB)}
-            </div>
-            <div className="mt-1 text-[11px] leading-snug">
-              总共 {input.totalGiB} GiB ·{' '}
-              {result.freeGiB >= 0
+          <Stat
+            label={result.fits ? '装得下' : '装不下，会 OOM'}
+            value={formatGiB(result.totalGiB)}
+            tone={result.fits ? 'ok' : 'bad'}
+            note={`总共 ${input.totalGiB} GiB · ${
+              result.freeGiB >= 0
                 ? `余量 ${formatGiB(result.freeGiB)}`
-                : `超出 ${formatGiB(Math.abs(result.freeGiB))}`}
-            </div>
-          </div>
+                : `超出 ${formatGiB(Math.abs(result.freeGiB))}`
+            }`}
+          />
 
           {/* 占用条 */}
-          <div className="flex h-2.5 overflow-hidden rounded-full bg-gray-100">
+          <div className="flex h-2.5 overflow-hidden rounded-full bg-soft-2">
             {(['train', 'ref', 'infer'] as const).map((group) => {
               const giB = result.lines
                 .filter((l) => l.group === group)
@@ -268,12 +230,12 @@ export function VramBudget() {
               )
             })}
             <div
-              className="bg-gray-400"
+              className="bg-line-strong"
               style={{ width: `${(result.reserveGiB / input.totalGiB) * 100}%` }}
               title={`预留 ${formatGiB(result.reserveGiB)}`}
             />
           </div>
-          <div className="flex flex-wrap gap-x-3.5 gap-y-1 text-[11px] text-gray-500">
+          <div className="flex flex-wrap gap-x-3.5 gap-y-1 text-[11px] text-mute">
             {(['train', 'ref', 'infer'] as const).map((group) => (
               <span key={group} className="flex items-center gap-1">
                 <span className={`h-2 w-2 rounded-full ${GROUP_COLOR[group]}`} />
@@ -281,55 +243,37 @@ export function VramBudget() {
               </span>
             ))}
             <span className="flex items-center gap-1.5">
-              <span className="h-2 w-2 rounded-full bg-gray-400" />
+              <span className="h-2 w-2 rounded-full bg-line-strong" />
               context 与碎片预留
             </span>
           </div>
 
           {/* 明细 */}
-          <ul className="space-y-2.5 rounded-lg border border-gray-200 px-3.5 py-3.5">
+          <ul className="space-y-2.5 rounded-md bg-soft-2 px-3.5 py-3.5">
             {result.lines.map((line) => (
               <li key={line.label}>
                 <div className="flex items-baseline justify-between gap-2 text-sm">
-                  <span className="text-gray-600">{line.label}</span>
-                  <span className="font-mono text-xs tabular-nums text-gray-900">
+                  <span className="text-body">{line.label}</span>
+                  <span className="font-mono text-xs tabular-nums text-ink">
                     {formatGiB(line.giB, 2)}
                   </span>
                 </div>
-                <div className="mt-1 h-1 overflow-hidden rounded-full bg-gray-100">
+                <div className="mt-1 h-1 overflow-hidden rounded-full bg-canvas">
                   <div
                     className={`h-full rounded-full ${GROUP_COLOR[line.group]}`}
                     style={{ width: `${(line.giB / maxLine) * 100}%` }}
                   />
                 </div>
-                <div className="mt-1 text-[11px] leading-snug text-gray-500">{line.note}</div>
+                <div className="mt-1 text-[11px] leading-snug text-mute">{line.note}</div>
               </li>
             ))}
           </ul>
 
-          {result.warnings.length > 0 && (
-            <ul className="space-y-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-900">
-              {result.warnings.map((w) => (
-                <li key={w} className="flex gap-1.5">
-                  <span className="shrink-0">⚠</span>
-                  <span>{w}</span>
-                </li>
-              ))}
-            </ul>
-          )}
+          {result.warnings.length > 0 && <NoteList items={result.warnings} tone="warn" />}
 
-          {result.suggestions.length > 0 && (
-            <ul className="space-y-1.5 rounded-lg border border-brand-200 bg-brand-50 px-3 py-2.5 text-xs leading-relaxed text-brand-900">
-              {result.suggestions.map((s) => (
-                <li key={s} className="flex gap-1.5">
-                  <span className="shrink-0">→</span>
-                  <span>{s}</span>
-                </li>
-              ))}
-            </ul>
-          )}
+          {result.suggestions.length > 0 && <NoteList items={result.suggestions} />}
         </div>
       </div>
-    </section>
+    </Panel>
   )
 }

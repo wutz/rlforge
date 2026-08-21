@@ -18,23 +18,27 @@
 ## 设计系统
 
 视觉规范在 [`DESIGN.md`](./DESIGN.md)（`npx getdesign@latest add vercel` 生成）。
-**token 落地与 [netpath](https://netpath.wutz.dev/)、storpath 完全对齐** —— 命名、灰阶、
-层次、主题色分工都一样，三个站放在一起是同一个家族，站与站之间只差主题色的色相。
-全部 token 在 `src/styles.css` 的 `@theme` 里，改设计只改那一处：
+**token 落地与 [storpath](https://storpath.wutz.dev/) 保持一致** —— 命名、分档、
+组件外壳都一样，两个站的样式代码可以直接互相搬。全部 token 在 `src/styles.css`
+的 `@theme` 里，改设计只改那一处：
 
 - **字体**：Geist / Geist Mono（Google Fonts 的 latin 子集，中文落系统字面，不为此多下字形）
-- **中性色**：整条 `gray-*` 换成设计稿那把纯中性灰（`gray-50` 页面底 → `gray-900` 墨黑）。
-  承载信息的小字最低到 `gray-500`（`#767676`，白底 AA 合格）
-- **分工**：墨黑 `gray-900` 负责「动作」（主按钮），主题色只负责「状态」——
-  链接、选中态、进度条、焦点圈
+- **中性阶**：正文三档 `ink` / `body` / `mute`，描边两档 `line` / `line-strong`，
+  底色三档 `canvas` / `soft` / `soft-2` —— 别再往里加灰
+- **语义色**：`info` / `warn` / `plum` / `danger`，各带 `-soft` 与 `-deep`；
+  只出现在徽标和状态上，不做大面积铺底
 - **主题色**：靛蓝 268°，与 storpath(30°)、netpath(203°) 各差 122° / 65°。
-  chroma 取 sRGB 上限的 80%，`brand-600` 白底 4.8:1 作填充、`brand-700` 6.6:1 作文字。
-  `brand-600` 同时是 `public/logo.svg` 的底色 —— 三个站共同的约定是「logo 底色 == brand-600」，
-  改这一档必须同步改 logo
-- **层次**：`shadow-e1` ~ `e5` 叠加式极淡投影，描边交给 `border-gray-200`，不叠 inset 环
-- **形状**：卡片 `rounded-xl`、内层 `rounded-lg`、按钮与表单 `rounded-md`
-- **装饰**：没有。层级靠留白和字重，不靠颜色；标题一律 600 收顶，不上 700
-- **阶段色**：只出现在等宽小角标和学习目标的圆点上，面积很小；成片浅色底一律换中性灰
+  `brand-600` 是按钮底色（白字 4.82:1，别再往上提亮），同时是 `public/logo.svg`
+  的填充色 —— 三个站共同的约定是「logo 底色 == brand-600」，改这一档必须同步改 logo
+- **半径**：`xs` 4px / `sm` 6px 控件 / `md` 8px 卡片 / `lg` 12px 大卡片，按钮统一走 6px
+- **层次**：`shadow-hair` / `card` / `soft` / `float` 叠层阴影，内含 1px inset 描边 ——
+  所以卡片不写 border，避免和 inset 环重影
+- **排版**：`.display-2xl` ~ `.display-sm` 五档，字重封顶 600，字号越大字距收得越紧；
+  `.eyebrow` 是等宽小眉标，只用在栏目标题上
+- **阶段色**：没有。五个阶段共用中性的 `LEVEL_CHIP` 角标，靠 L0–L4 的字面区分 ——
+  五种浅色堆一页像一叠便利贴，而且会和主题色（代表「可点」）撞车
+- **共享原语**：`src/components/ui.tsx` 里的 `Panel` / `Field` / `Stat` / `NoteList` / `inputCls`，
+  三个计算器的外壳都从这里来
 
 ## 开发
 
