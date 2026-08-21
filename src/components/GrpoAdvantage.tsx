@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { clippedObjective, groupAdvantages } from '#/lib/grpo'
+import { Panel, inputCls } from './ui'
 
 /** 预置几组典型形态，比自己拖滑块更快看出规律 */
 const PRESETS: { label: string; hint: string; rewards: number[] }[] = [
@@ -9,9 +10,6 @@ const PRESETS: { label: string; hint: string; rewards: number[] }[] = [
   { label: '全错', hint: '同样 std = 0。题目太难时会大面积出现', rewards: [0, 0, 0, 0, 0, 0, 0, 0] },
   { label: '带格式分', hint: '复合 reward：格式分让分数连续，避免整组归零', rewards: [1.2, 0.2, 0.2, 1.2, 0.2, 0, 0.2, 1.2] },
 ]
-
-const inputCls =
-  'w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100'
 
 export function GrpoAdvantage() {
   const [rewards, setRewards] = useState<number[]>(PRESETS[0].rewards)
@@ -39,18 +37,8 @@ export function GrpoAdvantage() {
   const clip = clippedObjective(ratio, demoAdvantage, eps, eps)
 
   return (
-    <section className="my-6 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-soft">
-      <header className="flex items-center justify-between border-b border-gray-100 px-4 py-2.5">
-        <div className="flex items-center gap-2">
-          <span className="rounded bg-violet-100 px-2 py-0.5 text-xs font-semibold text-violet-700">
-            演示
-          </span>
-          <span className="text-sm font-medium text-gray-700">GRPO 优势与 clip</span>
-        </div>
-        <span className="font-mono text-[11px] text-gray-400">G = {rewards.length}</span>
-      </header>
-
-      <div className="px-4 py-4">
+    <Panel eyebrow="Demo" title="GRPO 优势与 clip" aside={`G = ${rewards.length}`}>
+      <div className="px-4 py-4 sm:px-5">
         {/* 预设 */}
         <div className="flex flex-wrap gap-1.5">
           {PRESETS.map((preset) => (
@@ -61,7 +49,7 @@ export function GrpoAdvantage() {
                 setRewards(preset.rewards)
                 setPresetHint(preset.hint)
               }}
-              className="rounded-lg border border-gray-200 px-2.5 py-1 text-xs text-gray-600 transition hover:border-brand-500 hover:bg-brand-50"
+              className="rounded-sm border border-line px-2.5 py-1 text-xs text-body transition hover:border-line-strong hover:bg-soft"
             >
               {preset.label}
             </button>
@@ -69,7 +57,7 @@ export function GrpoAdvantage() {
           <select
             value={rewards.length}
             onChange={(e) => resize(Number(e.target.value))}
-            className="rounded-lg border border-gray-200 px-2 py-1 text-xs text-gray-600"
+            className="rounded-sm border border-line px-2 py-1 text-xs text-body"
           >
             {[4, 6, 8, 12, 16].map((n) => (
               <option key={n} value={n}>
@@ -78,7 +66,7 @@ export function GrpoAdvantage() {
             ))}
           </select>
         </div>
-        <p className="mt-2 text-xs text-gray-500">{presetHint}</p>
+        <p className="mt-2.5 text-xs leading-relaxed text-mute">{presetHint}</p>
 
         {/* 组内明细 */}
         <div className="mt-4 space-y-1.5">
@@ -87,7 +75,7 @@ export function GrpoAdvantage() {
             const pct = (Math.abs(advantage) / maxAbs) * 50
             return (
               <div key={i} className="flex items-center gap-2">
-                <span className="w-12 shrink-0 font-mono text-[11px] text-gray-400">#{i + 1}</span>
+                <span className="w-12 shrink-0 font-mono text-[11px] text-mute">#{i + 1}</span>
                 <input
                   type="range"
                   min={0}
@@ -95,17 +83,17 @@ export function GrpoAdvantage() {
                   step={0.1}
                   value={reward}
                   onChange={(e) => setReward(i, Number(e.target.value))}
-                  className="w-24 shrink-0 accent-violet-600"
+                  className="w-24 shrink-0 accent-brand-600"
                 />
-                <span className="w-10 shrink-0 font-mono text-[11px] text-gray-600">
+                <span className="w-10 shrink-0 font-mono text-[11px] text-body">
                   {reward.toFixed(1)}
                 </span>
                 {/* 优势条：以中线为零点，向右为正 */}
-                <div className="relative h-4 min-w-0 flex-1 rounded bg-gray-50">
-                  <div className="absolute left-1/2 top-0 h-full w-px bg-gray-300" />
+                <div className="relative h-4 min-w-0 flex-1 rounded-xs bg-soft-2">
+                  <div className="absolute left-1/2 top-0 h-full w-px bg-line-strong" />
                   <div
-                    className={`absolute top-0.5 h-3 rounded ${
-                      advantage >= 0 ? 'bg-emerald-500' : 'bg-rose-500'
+                    className={`absolute top-0.5 h-3 rounded-xs ${
+                      advantage >= 0 ? 'bg-info' : 'bg-danger'
                     }`}
                     style={
                       advantage >= 0
@@ -116,7 +104,11 @@ export function GrpoAdvantage() {
                 </div>
                 <span
                   className={`w-14 shrink-0 text-right font-mono text-[11px] ${
-                    advantage > 0 ? 'text-emerald-700' : advantage < 0 ? 'text-rose-700' : 'text-gray-400'
+                    advantage > 0
+                      ? 'text-info-deep'
+                      : advantage < 0
+                        ? 'text-danger-deep'
+                        : 'text-mute'
                   }`}
                 >
                   {advantage >= 0 ? '+' : ''}
@@ -127,18 +119,18 @@ export function GrpoAdvantage() {
           })}
         </div>
 
-        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 rounded-lg bg-gray-50 px-3 py-2 font-mono text-xs text-gray-600">
+        <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1 rounded-md bg-soft-2 px-3.5 py-2.5 font-mono text-xs text-body">
           <span>mean = {result.mean.toFixed(3)}</span>
           <span>std = {result.std.toFixed(3)}</span>
           <span>
             Σadv = {result.advantages.reduce((s, a) => s + a, 0).toFixed(3)}
-            <span className="ml-1 font-sans text-[10px] text-gray-400">（恒为 0）</span>
+            <span className="ml-1 font-sans text-[10px] text-mute">（恒为 0）</span>
           </span>
         </div>
 
         {result.degenerate && (
-          <div className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs text-rose-900">
-            <strong>std = 0，整组优势归零。</strong>
+          <div className="mt-2.5 rounded-md bg-danger-soft/50 px-3.5 py-3 text-xs leading-relaxed text-danger-deep">
+            <strong className="font-medium">std = 0，整组优势归零。</strong>
             这一批采样对参数更新没有任何贡献，等于白跑一次 rollout。
             这是 GRPO 最主要的效率损失来源：题目太简单（全对）或太难（全错）都会触发。
             对策是筛掉这类 prompt（DAPO 的动态采样）或加入连续的格式分让分数不再只有 0 和 1。
@@ -146,14 +138,14 @@ export function GrpoAdvantage() {
         )}
 
         {/* clip 演示 */}
-        <div className="mt-5 border-t border-gray-100 pt-4">
-          <div className="text-xs font-semibold text-gray-700">
+        <div className="mt-6 border-t border-line pt-5">
+          <div className="text-xs font-medium text-ink">
             拿 #1 这条（优势 {demoAdvantage >= 0 ? '+' : ''}
             {demoAdvantage.toFixed(2)}）看 clip 在做什么
           </div>
           <div className="mt-2 grid gap-3 sm:grid-cols-2">
             <label className="block">
-              <span className="mb-1 block text-xs text-gray-600">
+              <span className="mb-1.5 block text-xs text-body">
                 ratio = exp(new − old) ：{ratio.toFixed(2)}
               </span>
               <input
@@ -163,14 +155,14 @@ export function GrpoAdvantage() {
                 step={0.02}
                 value={ratio}
                 onChange={(e) => setRatio(Number(e.target.value))}
-                className="w-full accent-violet-600"
+                className="w-full accent-brand-600"
               />
-              <span className="mt-1 block text-[11px] text-gray-400">
+              <span className="mt-1.5 block text-[11px] leading-snug text-mute">
                 训练刚开始时恒等于 1；同一批数据反复更新几次后才会偏离
               </span>
             </label>
             <label className="block">
-              <span className="mb-1 block text-xs text-gray-600">clip 阈值 ε：{eps.toFixed(2)}</span>
+              <span className="mb-1.5 block text-xs text-body">clip 阈值 ε：{eps.toFixed(2)}</span>
               <select
                 value={eps}
                 onChange={(e) => setEps(Number(e.target.value))}
@@ -185,39 +177,39 @@ export function GrpoAdvantage() {
             </label>
           </div>
 
-          <dl className="mt-3 divide-y divide-gray-100 rounded-xl border border-gray-200 text-sm">
+          <dl className="mt-4 divide-y divide-line rounded-md bg-soft-2 px-3.5 text-sm">
             {[
               ['未截断项 ratio × A', clip.unclippedTerm.toFixed(3)],
               [`截断后 clip(ratio) = ${clip.clipped.toFixed(2)}`, clip.clippedTerm.toFixed(3)],
               ['取 min 之后的目标', clip.objective.toFixed(3)],
             ].map(([label, value]) => (
-              <div key={label} className="flex items-center justify-between px-3 py-2">
-                <dt className="text-gray-500">{label}</dt>
-                <dd className="font-mono font-medium text-gray-900">{value}</dd>
+              <div key={label} className="flex items-center justify-between py-2">
+                <dt className="text-body">{label}</dt>
+                <dd className="font-mono text-xs tabular-nums text-ink">{value}</dd>
               </div>
             ))}
           </dl>
 
           <div
-            className={`mt-2 rounded-lg px-3 py-2 text-xs ${
-              clip.active ? 'bg-amber-50 text-amber-900' : 'bg-gray-50 text-gray-600'
+            className={`mt-2.5 rounded-md px-3.5 py-3 text-xs leading-relaxed ${
+              clip.active ? 'bg-warn-soft text-warn-deep' : 'bg-soft-2 text-body'
             }`}
           >
             {clip.active ? (
               <>
-                <strong>clip 生效了。</strong>
+                <strong className="font-medium">clip 生效了。</strong>
                 取 min 之后目标被压住，这一步在这个 token 上的梯度是 0 —— 也就是说
                 「这条已经改得够多了，这一批别再往这个方向推」。日志里的 clip 比例就是统计这个。
               </>
             ) : (
               <>
-                <strong>clip 未生效。</strong>
+                <strong className="font-medium">clip 未生效。</strong>
                 更新幅度还在信任区间内，梯度按 ratio × A 正常传。训练健康时大部分 token 都在这个状态。
               </>
             )}
           </div>
         </div>
       </div>
-    </section>
+    </Panel>
   )
 }

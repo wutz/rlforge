@@ -2,35 +2,42 @@ import type { ReactNode } from 'react'
 
 type Tone = 'note' | 'tip' | 'warn' | 'trap' | 'gpu'
 
-const TONE: Record<Tone, { label: string; box: string; head: string; icon: string }> = {
+/*
+ * 五种语气各占一个语义色槽，颜色只落在左边那道细线和标签上，正文一律走中性色 ——
+ * 整块铺底色会把课文切得七零八落。
+ *
+ * gpu 是本站独有的一档（5090 单卡备注），借 plum；plum 另一处用在「计算器」徽标上，
+ * 语境不同不会混。
+ */
+const TONE: Record<Tone, { label: string; rule: string; head: string; icon: string }> = {
   note: {
     label: '说明',
-    box: 'border-sky-200 bg-sky-50',
-    head: 'text-sky-800',
+    rule: 'bg-line-strong',
+    head: 'text-body',
     icon: 'i',
   },
   tip: {
     label: '实践建议',
-    box: 'border-emerald-200 bg-emerald-50',
-    head: 'text-emerald-800',
+    rule: 'bg-info',
+    head: 'text-info-deep',
     icon: '✓',
   },
   warn: {
     label: '注意',
-    box: 'border-amber-200 bg-amber-50',
-    head: 'text-amber-800',
+    rule: 'bg-warn',
+    head: 'text-warn-deep',
     icon: '!',
   },
   trap: {
     label: '新手常踩的坑',
-    box: 'border-rose-200 bg-rose-50',
-    head: 'text-rose-800',
+    rule: 'bg-danger',
+    head: 'text-danger-deep',
     icon: '×',
   },
   gpu: {
     label: '5090 单卡备注',
-    box: 'border-orange-200 bg-orange-50',
-    head: 'text-orange-800',
+    rule: 'bg-plum',
+    head: 'text-plum-deep',
     icon: '▣',
   },
 }
@@ -46,14 +53,17 @@ export function Callout({
 }) {
   const tone = TONE[type]
   return (
-    <div className={`my-5 overflow-hidden rounded-lg border-l-4 px-4 py-3 text-sm shadow-soft ${tone.box}`}>
-      <div className={`mb-1 flex items-center gap-2 font-semibold ${tone.head}`}>
-        <span className={`inline-flex h-5 w-5 items-center justify-center rounded-full bg-white text-xs shadow-sm ${tone.head}`}>
-          {tone.icon}
-        </span>
-        {title ?? tone.label}
+    <div className="my-6 flex overflow-hidden rounded-md bg-canvas text-sm shadow-card">
+      <span className={`w-0.5 shrink-0 ${tone.rule}`} />
+      <div className="min-w-0 flex-1 px-4 py-3.5">
+        <div className={`mb-1.5 flex items-center gap-2 ${tone.head}`}>
+          <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-soft-2 font-mono text-[10px]">
+            {tone.icon}
+          </span>
+          <span className="font-medium">{title ?? tone.label}</span>
+        </div>
+        <div className="text-body [&>*+*]:mt-2">{children}</div>
       </div>
-      <div className="text-gray-700 [&>*+*]:mt-2">{children}</div>
     </div>
   )
 }

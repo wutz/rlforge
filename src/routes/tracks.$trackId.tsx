@@ -13,8 +13,8 @@ function TrackPage() {
 
   if (!track) {
     return (
-      <div className="rounded-xl border border-gray-200 bg-white px-6 py-10 text-center">
-        <p className="text-gray-500">没有这个阶段：{trackId}</p>
+      <div className="rounded-lg bg-canvas px-6 py-12 text-center shadow-card">
+        <p className="text-body">没有这个阶段：{trackId}</p>
         <Link to="/" className="mt-3 inline-block text-sm text-brand-600 hover:underline">
           返回学习路径
         </Link>
@@ -27,58 +27,32 @@ function TrackPage() {
     doneSet.has(lessonKey(track.id, lesson.id)),
   ).length
   const totalMinutes = track.lessons.reduce((sum, lesson) => sum + lesson.minutes, 0)
-  const percent =
-    track.lessons.length > 0 ? Math.round((doneCount / track.lessons.length) * 100) : 0
 
   return (
-    <div className="space-y-6">
-      <nav className="text-xs text-gray-400">
-        <Link to="/" className="hover:text-gray-700">
+    <div className="space-y-8">
+      <nav className="font-mono text-xs text-mute">
+        <Link to="/" className="transition hover:text-ink">
           学习路径
         </Link>
-        <span className="mx-1.5">/</span>
-        <span className="text-gray-600">
+        <span className="mx-1.5 text-line-strong">/</span>
+        <span className="text-body">
           {track.level} {track.title}
         </span>
       </nav>
 
-      <header
-        className={`relative overflow-hidden rounded-2xl border px-6 py-6 shadow-soft ${track.accent.border} ${track.accent.bg}`}
-      >
-        <div
-          aria-hidden
-          className="pointer-events-none absolute -right-12 -top-12 h-40 w-40 rounded-full bg-white/50 blur-3xl"
-        />
-        <div className="relative">
-          <div className="flex flex-wrap items-center gap-3">
-            <span
-              className={`rounded-lg bg-white px-2.5 py-1 text-sm font-bold shadow-sm ${track.accent.text}`}
-            >
-              {track.level}
-            </span>
-            <h1 className="text-2xl font-bold tracking-tight">{track.title}</h1>
-            <span className="text-sm text-gray-500">{track.subtitle}</span>
-          </div>
-          <p className="mt-3 max-w-3xl leading-relaxed text-gray-700">{track.goal}</p>
-
-          <div className="mt-4 flex flex-wrap gap-2">
-            <span className="rounded-full bg-white/70 px-2.5 py-1 text-xs text-gray-700">
-              {track.lessons.length} 节课 · 约 {Math.round(totalMinutes / 60)} 小时
-            </span>
-            <span className="rounded-full bg-white/70 px-2.5 py-1 text-xs text-gray-700">
-              已完成 {doneCount}/{track.lessons.length}
-            </span>
-          </div>
-
-          <div className="mt-4 flex items-center gap-3">
-            <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-white/70">
-              <div
-                className={`h-full rounded-full ${track.accent.dot}`}
-                style={{ width: `${percent}%` }}
-              />
-            </div>
-            <span className="shrink-0 text-xs font-medium tabular-nums text-gray-600">{percent}%</span>
-          </div>
+      <header>
+        <div className="eyebrow">
+          {track.level} · {track.subtitle}
+        </div>
+        <h1 className="display-xl mt-3">{track.title}</h1>
+        <p className="mt-4 max-w-3xl text-[17px] leading-relaxed text-body">{track.goal}</p>
+        <div className="mt-5 flex flex-wrap gap-x-5 gap-y-1 font-mono text-xs text-mute">
+          <span>
+            {track.lessons.length} 节课 · 约 {Math.round(totalMinutes / 60)} 小时
+          </span>
+          <span>
+            已完成 {doneCount}/{track.lessons.length}
+          </span>
         </div>
       </header>
 
@@ -90,36 +64,34 @@ function TrackPage() {
               <Link
                 to="/learn/$trackId/$lessonId"
                 params={{ trackId: track.id, lessonId: lesson.id }}
-                className="group block rounded-xl border border-gray-200 bg-white px-5 py-4 shadow-soft transition hover:-translate-y-0.5 hover:border-brand-500 hover:shadow-card"
+                className="block rounded-md bg-canvas px-5 py-4 shadow-card transition hover:shadow-float"
               >
                 <div className="flex flex-wrap items-center gap-2">
                   <span
-                    className={`flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-medium ${
-                      done ? 'bg-emerald-500 text-white' : 'bg-gray-100 text-gray-500'
+                    className={`flex h-5 w-5 items-center justify-center rounded-full font-mono text-[10px] ${
+                      done ? 'bg-brand-600 text-white' : 'bg-soft-2 text-mute'
                     }`}
                   >
                     {done ? '✓' : index + 1}
                   </span>
-                  <h2 className="font-semibold text-gray-900 transition group-hover:text-brand-700">
-                    {lesson.title}
-                  </h2>
-                  <span className={`rounded px-1.5 py-0.5 text-[11px] ${KIND_STYLE[lesson.kind]}`}>
+                  <h2 className="display-sm">{lesson.title}</h2>
+                  <span className={`rounded-xs px-1.5 py-0.5 text-[11px] ${KIND_STYLE[lesson.kind]}`}>
                     {KIND_LABEL[lesson.kind]}
                   </span>
-                  <span className="text-xs text-gray-400">{lesson.minutes} 分钟</span>
+                  <span className="font-mono text-[11px] text-mute">{lesson.minutes}m</span>
                   {lesson.status === 'planned' && (
-                    <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-400">
+                    <span className="rounded-xs bg-soft-2 px-1.5 py-0.5 text-[11px] text-mute">
                       仅大纲
                     </span>
                   )}
                 </div>
 
-                <p className="mt-2 text-sm leading-relaxed text-gray-600">{lesson.summary}</p>
+                <p className="mt-2 text-sm leading-relaxed text-body">{lesson.summary}</p>
 
-                <ul className="mt-3 space-y-1 text-xs text-gray-500">
+                <ul className="mt-3 space-y-1.5">
                   {lesson.objectives.map((objective) => (
-                    <li key={objective} className="flex gap-1.5">
-                      <span className="text-gray-300">→</span>
+                    <li key={objective} className="flex gap-2 text-[13px] leading-relaxed text-body">
+                      <span className="mt-2 h-1 w-1 shrink-0 rounded-full bg-line-strong" />
                       {objective}
                     </li>
                   ))}
