@@ -59,7 +59,7 @@ export function VramBudget() {
   const maxLine = Math.max(...result.lines.map((l) => l.giB), 0.001)
 
   return (
-    <section className="my-6 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+    <section className="my-6 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-soft">
       <header className="flex items-center justify-between border-b border-gray-100 px-4 py-2.5">
         <div className="flex items-center gap-2">
           <span className="rounded bg-violet-100 px-2 py-0.5 text-xs font-semibold text-violet-700">

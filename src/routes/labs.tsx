@@ -31,8 +31,10 @@ function LabsPage() {
   return (
     <div className="space-y-8">
       <header>
-        <h1 className="text-2xl font-bold">实验与闯关</h1>
-        <p className="mt-2 max-w-3xl text-gray-600">
+        <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
+          实验与<span className="text-brand-600">闯关</span>
+        </h1>
+        <p className="mt-2 max-w-3xl leading-relaxed text-gray-600">
           RL 是一门只能靠跑才能学会的手艺 —— 公式看懂了，第一次跑起来照样会 OOM、会不收敛。
           这里把全部动手环节汇总在一起，你可以脱离课程顺序直接来练。
         </p>
@@ -44,8 +46,11 @@ function LabsPage() {
 
         return (
           <section key={section.kind}>
-            <div className="flex flex-wrap items-baseline gap-3">
-              <h2 className="text-lg font-bold">{section.title}</h2>
+            <div className="flex flex-wrap items-center gap-3">
+              <span className={`rounded-md px-2 py-0.5 text-xs font-semibold ${KIND_STYLE[section.kind]}`}>
+                {items.length}
+              </span>
+              <h2 className="text-lg font-bold tracking-tight">{section.title}</h2>
               <span className="text-sm text-gray-500">{section.desc}</span>
             </div>
 
@@ -57,7 +62,7 @@ function LabsPage() {
                     key={`${track.id}/${lesson.id}`}
                     to="/learn/$trackId/$lessonId"
                     params={{ trackId: track.id, lessonId: lesson.id }}
-                    className="flex flex-col rounded-xl border border-gray-200 bg-white px-5 py-4 shadow-sm transition hover:border-brand-500 hover:shadow"
+                    className="group flex flex-col rounded-xl border border-gray-200 bg-white px-5 py-4 shadow-soft transition hover:-translate-y-0.5 hover:border-brand-500 hover:shadow-card"
                   >
                     <div className="flex flex-wrap items-center gap-2 text-xs">
                       <span
@@ -79,7 +84,9 @@ function LabsPage() {
                         </span>
                       )}
                     </div>
-                    <h3 className="mt-2 font-semibold text-gray-900">{lesson.title}</h3>
+                    <h3 className="mt-2 font-semibold text-gray-900 transition group-hover:text-brand-700">
+                      {lesson.title}
+                    </h3>
                     <p className="mt-1 text-sm leading-relaxed text-gray-600">{lesson.summary}</p>
                   </Link>
                 )

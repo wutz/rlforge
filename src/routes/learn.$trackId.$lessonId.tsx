@@ -106,7 +106,7 @@ function LessonPage() {
         </LessonKeyContext.Provider>
 
         {lesson.refs && lesson.refs.length > 0 && (
-          <section className="mt-10 rounded-xl border border-gray-200 bg-white px-4 py-4 sm:px-5">
+          <section className="mt-10 rounded-xl border border-gray-200 bg-white px-4 py-4 shadow-soft sm:px-5">
             <h2 className="text-sm font-semibold text-gray-900">延伸资料</h2>
             <ul className="mt-2 space-y-1.5 text-sm">
               {lesson.refs.map((ref) => (
@@ -143,8 +143,8 @@ function LessonPage() {
             onClick={() => setLessonDone(key, !done)}
             className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
               done
-                ? 'border border-emerald-300 bg-emerald-50 text-emerald-700'
-                : 'bg-brand-600 text-white hover:bg-brand-700'
+                ? 'border border-emerald-300 bg-emerald-50 text-emerald-700 hover:border-emerald-400'
+                : 'bg-brand-600 text-white shadow-soft hover:bg-brand-700 hover:shadow-card'
             }`}
           >
             {done ? '✓ 已标记完成（点击取消）' : '标记为已完成'}
@@ -154,7 +154,7 @@ function LessonPage() {
               to="/learn/$trackId/$lessonId"
               params={{ trackId: next.track.id, lessonId: next.lesson.id }}
               search={search}
-              className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 transition hover:bg-gray-50"
+              className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 transition hover:border-brand-300 hover:bg-brand-50/50 hover:text-brand-700"
             >
               下一课：{next.lesson.title} →
             </Link>
@@ -184,7 +184,7 @@ function LessonPage() {
       </article>
 
       <aside className="mt-10 lg:mt-0">
-        <div className="sticky top-20 max-h-[calc(100vh-6rem)] overflow-y-auto rounded-xl border border-gray-200 bg-white px-4 py-4">
+        <div className="sticky top-20 max-h-[calc(100vh-6rem)] overflow-y-auto rounded-xl border border-gray-200 bg-white px-4 py-4 shadow-soft">
           {nav && inPath ? (
             <>
               <div className="text-xs font-semibold text-gray-500">{nav.path.role.title}</div>
@@ -322,8 +322,10 @@ function SidebarLink({
       to="/learn/$trackId/$lessonId"
       params={{ trackId, lessonId }}
       search={search}
-      className={`block rounded-lg px-2 py-1.5 leading-snug transition ${
-        active ? 'bg-brand-50 font-medium text-brand-700' : 'text-gray-600 hover:bg-gray-50'
+      className={`block rounded-lg border-l-2 px-2 py-1.5 leading-snug transition ${
+        active
+          ? 'border-brand-500 bg-brand-50 font-medium text-brand-700'
+          : 'border-transparent text-gray-600 hover:bg-gray-50 hover:text-gray-900'
       }`}
     >
       <span className={`mr-1.5 text-xs ${done ? 'text-emerald-500' : 'text-gray-300'}`}>
