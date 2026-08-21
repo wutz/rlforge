@@ -54,7 +54,7 @@ export function Quiz({
   }
 
   return (
-    <section className="my-6 rounded-xl border border-gray-200 bg-white shadow-sm">
+    <section className="my-6 rounded-xl border border-gray-200 bg-white shadow-soft">
       <header className="flex items-center gap-2 border-b border-gray-100 px-4 py-2.5">
         <span className="rounded bg-brand-100 px-2 py-0.5 text-xs font-semibold text-brand-700">
           检查点
@@ -70,7 +70,7 @@ export function Quiz({
             const chosen = picked.includes(index)
             const reveal = submitted
             let cls = 'border-gray-200 hover:border-brand-500 hover:bg-brand-50'
-            if (chosen && !reveal) cls = 'border-brand-500 bg-brand-50'
+            if (chosen && !reveal) cls = 'border-brand-500 bg-brand-50 ring-1 ring-brand-200'
             if (reveal && option.correct) cls = 'border-emerald-400 bg-emerald-50'
             if (reveal && chosen && !option.correct) cls = 'border-rose-400 bg-rose-50'
 

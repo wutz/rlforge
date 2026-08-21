@@ -46,9 +46,9 @@ export function Callout({
 }) {
   const tone = TONE[type]
   return (
-    <div className={`my-5 rounded-lg border px-4 py-3 text-sm ${tone.box}`}>
+    <div className={`my-5 overflow-hidden rounded-lg border-l-4 px-4 py-3 text-sm shadow-soft ${tone.box}`}>
       <div className={`mb-1 flex items-center gap-2 font-semibold ${tone.head}`}>
-        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-white/70 text-xs">
+        <span className={`inline-flex h-5 w-5 items-center justify-center rounded-full bg-white text-xs shadow-sm ${tone.head}`}>
           {tone.icon}
         </span>
         {title ?? tone.label}
