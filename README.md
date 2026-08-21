@@ -9,10 +9,23 @@
 与 storpath 一致：
 
 - **Bun** + **Vite 8** + **TanStack Start / Router**（文件路由，SSR）
-- **React 19** + **Tailwind 4**（`@theme` 自定义 brand 色，炉火橙）
+- **React 19** + **Tailwind 4**（`@theme` 里定义全部设计令牌，见下）
 - **MDX** 写正文，`@shikijs/rehype` 做代码高亮，`remark-gfm` + `rehype-slug`
 - **Cloudflare Workers** 部署（wrangler，custom domain）
 - 进度存 `localStorage`，无账号体系，无后端
+
+## 设计系统
+
+视觉规范在 [`DESIGN.md`](./DESIGN.md)（`npx getdesign@latest add vercel` 生成），令牌全部落在
+`src/styles.css` 的 `@theme` 里，改设计只改那一处：
+
+- **表面四档**：`canvas`(白卡) / `canvas-soft`(页面底色) / `canvas-soft-2`(内嵌区) / `ink`(极性翻转的深色段)
+- **文字三档**：`ink` / `body` / `mute`；分隔线只有 `hairline` 一档
+- **主行动色是 ink（近黑）**，不是品牌色 —— 黑色按钮就是转化目标
+- **品牌靛蓝**退到「链接 / 当前位置 / 聚焦」这一层，承担站点身份识别（与 storpath 30°、netpath 205° 拉开色相）
+- **排版**：`text-display-xl/lg/md/sm` 带负字距，字重上限 600；小标签 / 表头 / 代码一律等宽体（`.eyebrow`）
+- **装饰只有一处**：首页的多色网格渐变（`.mesh`），只在首屏尺度出现
+- **立面**：`shadow-soft / card / lift / modal` 四档叠加式阴影 + 1px hairline 边框，不用单发重投影
 
 ## 开发
 

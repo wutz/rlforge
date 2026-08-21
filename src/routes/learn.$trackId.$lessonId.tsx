@@ -23,11 +23,14 @@ function LessonPage() {
 
   if (!found) {
     return (
-      <div className="rounded-xl border border-gray-200 bg-white px-6 py-10 text-center">
-        <p className="text-gray-500">
+      <div className="rounded-xl border border-hairline bg-canvas px-6 py-14 text-center shadow-soft">
+        <p className="text-body">
           没有这节课：{trackId}/{lessonId}
         </p>
-        <Link to="/" className="mt-3 inline-block text-sm text-brand-600 hover:underline">
+        <Link
+          to="/"
+          className="mt-4 inline-block rounded-full bg-ink px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-body"
+        >
           返回学习路径
         </Link>
       </div>
@@ -49,44 +52,46 @@ function LessonPage() {
   const next = inPath ? nav?.next : flat.next
 
   return (
-    <div className="lg:grid lg:grid-cols-[1fr_15rem] lg:gap-8">
+    <div className="lg:grid lg:grid-cols-[1fr_16rem] lg:gap-12">
       <article className="min-w-0">
-        <nav className="text-xs text-gray-400">
-          <Link to="/" className="hover:text-gray-700">
+        <nav className="font-mono text-xs text-mute">
+          <Link to="/" className="transition-colors hover:text-ink">
             学习路径
           </Link>
-          <span className="mx-1.5">/</span>
-          <Link to="/tracks/$trackId" params={{ trackId: track.id }} className="hover:text-gray-700">
+          <span className="mx-2 text-hairline-strong">/</span>
+          <Link
+            to="/tracks/$trackId"
+            params={{ trackId: track.id }}
+            className="transition-colors hover:text-ink"
+          >
             {track.level} {track.title}
           </Link>
         </nav>
 
         <RoleBanner nav={nav} track={track} lesson={lesson} />
 
-        <header className="mt-3 border-b border-gray-200 pb-5">
+        <header className="mt-6 border-b border-hairline pb-7">
           <div className="flex flex-wrap items-center gap-2">
             <span className={`rounded px-1.5 py-0.5 text-[11px] ${KIND_STYLE[lesson.kind]}`}>
               {KIND_LABEL[lesson.kind]}
             </span>
-            <span className="text-xs text-gray-400">预计 {lesson.minutes} 分钟</span>
+            <span className="font-mono text-[11px] text-mute">预计 {lesson.minutes} 分钟</span>
             {passedCheckpoints > 0 && (
-              <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[11px] text-emerald-700">
+              <span className="rounded-full bg-ink px-1.5 py-0.5 text-[10px] font-medium text-white">
                 检查点通过 {passedCheckpoints}
               </span>
             )}
           </div>
-          <h1 className="mt-2 text-2xl font-bold tracking-tight sm:text-3xl">{lesson.title}</h1>
-          <p className="mt-2 text-sm leading-relaxed text-gray-600 sm:text-base">{lesson.summary}</p>
+          <h1 className="mt-3 text-display-md text-ink sm:text-display-lg">{lesson.title}</h1>
+          <p className="mt-3 leading-relaxed text-body">{lesson.summary}</p>
         </header>
 
-        <section
-          className={`mt-6 rounded-xl border px-4 py-4 sm:px-5 ${track.accent.border} ${track.accent.bg}`}
-        >
-          <h2 className={`text-sm font-semibold ${track.accent.text}`}>学完这节你能做到</h2>
-          <ul className="mt-2 space-y-1.5 text-sm text-gray-700">
+        <section className="mt-7 rounded-lg border border-hairline bg-canvas-soft px-5 py-4">
+          <div className="eyebrow">学完这节你能做到</div>
+          <ul className="mt-3 space-y-2 text-sm leading-relaxed text-body">
             {lesson.objectives.map((objective) => (
-              <li key={objective} className="flex gap-2">
-                <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${track.accent.dot}`} />
+              <li key={objective} className="flex gap-2.5">
+                <span className={`mt-2 h-1 w-1 shrink-0 rounded-full ${track.accent.dot}`} />
                 {objective}
               </li>
             ))}
@@ -94,7 +99,7 @@ function LessonPage() {
         </section>
 
         <LessonKeyContext.Provider value={key}>
-          <div className="lesson-body mt-8">
+          <div className="lesson-body mt-10">
             {Content ? (
               <MDXProvider components={mdxComponents}>
                 <Content />
@@ -106,26 +111,26 @@ function LessonPage() {
         </LessonKeyContext.Provider>
 
         {lesson.refs && lesson.refs.length > 0 && (
-          <section className="mt-10 rounded-xl border border-gray-200 bg-white px-4 py-4 shadow-soft sm:px-5">
-            <h2 className="text-sm font-semibold text-gray-900">延伸资料</h2>
-            <ul className="mt-2 space-y-1.5 text-sm">
+          <section className="mt-12 rounded-lg border border-hairline bg-canvas px-5 py-4 shadow-soft">
+            <div className="eyebrow">延伸资料</div>
+            <ul className="mt-3 space-y-2 text-sm">
               {lesson.refs.map((ref) => (
-                <li key={ref.label + (ref.path ?? ref.href ?? '')} className="flex gap-2">
-                  <span className="text-gray-300">·</span>
+                <li key={ref.label + (ref.path ?? ref.href ?? '')} className="flex gap-2.5">
+                  <span className="text-hairline-strong">·</span>
                   {ref.href ? (
                     <a
                       href={ref.href}
                       target="_blank"
                       rel="noreferrer"
-                      className="text-brand-600 hover:underline"
+                      className="text-brand-600 underline decoration-brand-200 underline-offset-3 transition-colors hover:decoration-current"
                     >
                       {ref.label} ↗
                     </a>
                   ) : (
-                    <span className="text-gray-600">
+                    <span className="text-body">
                       {ref.label}
                       {ref.path && (
-                        <code className="ml-1.5 rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-700">
+                        <code className="ml-1.5 rounded bg-canvas-soft-2 px-1.5 py-0.5 font-mono text-xs text-ink">
                           {ref.path}
                         </code>
                       )}
@@ -137,14 +142,14 @@ function LessonPage() {
           </section>
         )}
 
-        <div className="mt-8 flex flex-wrap items-center gap-3 border-t border-gray-200 pt-6">
+        <div className="mt-10 flex flex-wrap items-center gap-3 border-t border-hairline pt-7">
           <button
             type="button"
             onClick={() => setLessonDone(key, !done)}
-            className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
+            className={`rounded-full px-5 py-2.5 text-sm font-medium transition-colors ${
               done
-                ? 'border border-emerald-300 bg-emerald-50 text-emerald-700 hover:border-emerald-400'
-                : 'bg-brand-600 text-white shadow-soft hover:bg-brand-700 hover:shadow-card'
+                ? 'border border-hairline bg-canvas text-body hover:bg-canvas-soft-2'
+                : 'bg-ink text-white hover:bg-body'
             }`}
           >
             {done ? '✓ 已标记完成（点击取消）' : '标记为已完成'}
@@ -154,50 +159,50 @@ function LessonPage() {
               to="/learn/$trackId/$lessonId"
               params={{ trackId: next.track.id, lessonId: next.lesson.id }}
               search={search}
-              className="rounded-lg border border-gray-300 px-4 py-2 text-sm text-gray-700 transition hover:border-brand-300 hover:bg-brand-50/50 hover:text-brand-700"
+              className="rounded-full border border-hairline bg-canvas px-5 py-2.5 text-sm font-medium text-ink transition-colors hover:bg-canvas-soft-2"
             >
               下一课：{next.lesson.title} →
             </Link>
           ) : (
             inPath && (
-              <span className="text-sm text-gray-500">
+              <span className="text-sm text-mute">
                 这是「{nav?.path.role.title}」路线的最后一节 🎉
               </span>
             )
           )}
         </div>
 
-        <nav className="mt-6 flex justify-between text-sm">
-          {prev ? (
+        {prev && (
+          <nav className="mt-6 text-sm">
             <Link
               to="/learn/$trackId/$lessonId"
               params={{ trackId: prev.track.id, lessonId: prev.lesson.id }}
               search={search}
-              className="text-gray-500 hover:text-brand-600"
+              className="text-mute transition-colors hover:text-ink"
             >
               ← {prev.lesson.title}
             </Link>
-          ) : (
-            <span />
-          )}
-        </nav>
+          </nav>
+        )}
       </article>
 
-      <aside className="mt-10 lg:mt-0">
-        <div className="sticky top-20 max-h-[calc(100vh-6rem)] overflow-y-auto rounded-xl border border-gray-200 bg-white px-4 py-4 shadow-soft">
+      <aside className="mt-14 lg:mt-0">
+        <div className="sticky top-20 max-h-[calc(100vh-6rem)] overflow-y-auto rounded-lg border border-hairline bg-canvas px-3 py-4 shadow-soft">
           {nav && inPath ? (
             <>
-              <div className="text-xs font-semibold text-gray-500">{nav.path.role.title}</div>
-              <div className="mt-0.5 text-[11px] text-gray-400">
-                第 {nav.current?.index} / {nav.path.lessonCount} 节
+              <div className="px-2">
+                <div className="eyebrow">{nav.path.role.title}</div>
+                <div className="mt-1 font-mono text-[11px] text-body">
+                  第 {nav.current?.index} / {nav.path.lessonCount} 节
+                </div>
               </div>
-              <ol className="mt-2 space-y-2.5 text-sm">
+              <ol className="mt-4 space-y-4 text-sm">
                 {nav.path.stages.map(({ stage, items }) => (
                   <li key={stage.title}>
-                    <div className="px-2 text-[11px] font-semibold tracking-wide text-gray-400">
+                    <div className="px-2 text-[11px] font-medium tracking-tight text-body">
                       {stage.title}
                     </div>
-                    <ol className="mt-1 space-y-0.5">
+                    <ol className="mt-1.5 space-y-0.5">
                       {items.map((item) => (
                         <li key={item.key}>
                           <SidebarLink
@@ -219,10 +224,10 @@ function LessonPage() {
             </>
           ) : (
             <>
-              <div className="text-xs font-semibold text-gray-500">
+              <div className="eyebrow px-2">
                 {track.level} · {track.title}
               </div>
-              <ol className="mt-2 space-y-0.5 text-sm">
+              <ol className="mt-3 space-y-0.5 text-sm">
                 {track.lessons.map((item) => (
                   <li key={item.id}>
                     <SidebarLink
@@ -259,12 +264,12 @@ function RoleBanner({
   // 带了 ?role= 但这节课不在那条路线里：说清楚，并给一条回去的路
   if (!nav.current) {
     return (
-      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs">
+      <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs">
         <span className="text-amber-800">这一节没排进「{nav.path.role.title}」路线</span>
         <Link
           to="/"
           search={{ role: nav.path.role.id }}
-          className="ml-auto text-amber-700 underline hover:text-amber-900"
+          className="ml-auto text-amber-700 underline underline-offset-3 hover:text-amber-900"
         >
           回到路线 →
         </Link>
@@ -275,23 +280,23 @@ function RoleBanner({
   const percent = Math.round((nav.current.index / nav.path.lessonCount) * 100)
 
   return (
-    <div className="mt-3 rounded-xl border border-brand-200 bg-brand-50/70 px-3.5 py-2.5">
+    <div className="mt-4 rounded-lg border border-hairline bg-canvas px-4 py-3 shadow-soft">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-        <span className="font-semibold text-brand-700">{nav.path.role.title} 路线</span>
-        <span className="text-gray-500">
-          第 {nav.current.index} / {nav.path.lessonCount} 节
-          {nav.stage && ` · ${nav.stage.title}`}
+        <span className="font-medium text-ink">{nav.path.role.title} 路线</span>
+        <span className="font-mono text-[11px] text-mute">
+          {nav.current.index} / {nav.path.lessonCount}
+          {nav.stage && <span className="ml-2 font-sans">{nav.stage.title}</span>}
         </span>
         <Link
           to="/learn/$trackId/$lessonId"
           params={{ trackId: track.id, lessonId: lesson.id }}
           search={{}}
-          className="ml-auto text-gray-400 hover:text-gray-700"
+          className="ml-auto text-mute transition-colors hover:text-ink"
         >
           退出路线
         </Link>
       </div>
-      <div className="mt-2 h-1 overflow-hidden rounded-full bg-white/80">
+      <div className="mt-2.5 h-0.5 overflow-hidden rounded-full bg-canvas-soft-2">
         <div className="h-full rounded-full bg-brand-500" style={{ width: `${percent}%` }} />
       </div>
     </div>
@@ -322,16 +327,20 @@ function SidebarLink({
       to="/learn/$trackId/$lessonId"
       params={{ trackId, lessonId }}
       search={search}
-      className={`block rounded-lg border-l-2 px-2 py-1.5 leading-snug transition ${
+      className={`block rounded-ui border-l-2 px-2 py-1.5 leading-snug transition-colors ${
         active
           ? 'border-brand-500 bg-brand-50 font-medium text-brand-700'
-          : 'border-transparent text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+          : 'border-transparent text-body hover:bg-canvas-soft hover:text-ink'
       }`}
     >
-      <span className={`mr-1.5 text-xs ${done ? 'text-emerald-500' : 'text-gray-300'}`}>
+      <span className={`mr-1.5 font-mono text-[10px] ${done ? 'text-ink' : 'text-hairline-strong'}`}>
         {done ? '✓' : '○'}
       </span>
-      {level && <span className={`mr-1 rounded px-1 py-0.5 text-[10px] ${levelClass}`}>{level}</span>}
+      {level && (
+        <span className={`mr-1 rounded px-1 py-0.5 font-mono text-[10px] ${levelClass}`}>
+          {level}
+        </span>
+      )}
       {title}
     </Link>
   )
@@ -339,19 +348,17 @@ function SidebarLink({
 
 function OutlinePlaceholder({ outline }: { outline: string[] }) {
   return (
-    <div className="rounded-xl border border-dashed border-gray-300 bg-white px-5 py-5">
-      <div className="flex items-center gap-2">
-        <span className="rounded bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-500">
+    <div className="rounded-lg border border-dashed border-hairline-strong/50 bg-canvas px-5 py-5">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="rounded bg-canvas-soft-2 px-2 py-0.5 font-mono text-[11px] text-body">
           正文待编写
         </span>
-        <span className="text-xs text-gray-400">以下是本节已定稿的小节大纲</span>
+        <span className="text-xs text-mute">以下是本节已定稿的小节大纲</span>
       </div>
       <ol className="mt-4 space-y-2">
         {outline.map((item, index) => (
-          <li key={item} className="flex gap-3 text-sm text-gray-700">
-            <span className="w-5 shrink-0 text-right font-mono text-xs text-gray-400">
-              {index + 1}
-            </span>
+          <li key={item} className="flex gap-3 text-sm text-body">
+            <span className="w-5 shrink-0 text-right font-mono text-xs text-mute">{index + 1}</span>
             {item}
           </li>
         ))}

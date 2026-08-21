@@ -40,7 +40,10 @@ export interface Track {
   title: string
   subtitle: string
   goal: string
-  /** Tailwind 类名片段，用于阶段配色 */
+  /**
+   * Tailwind 类名片段，用于阶段配色。
+   * 五档色相取自 DESIGN.md 的品牌渐变色板：琥珀 / 蓝 / 青 / 紫 / 品红。
+   */
   accent: {
     text: string
     bg: string
@@ -57,11 +60,15 @@ export const KIND_LABEL: Record<LessonKind, string> = {
   planner: '计算器',
 }
 
+/*
+ * 课型徽标。色相全部取自 DESIGN.md 的品牌渐变色板（蓝 / 青 / 紫 / 品红 / 琥珀），
+ * 不引入第六个强调色。「原理」是默认形态，刻意压成中性灰 —— 只有动手环节值得挂色。
+ */
 export const KIND_STYLE: Record<LessonKind, string> = {
-  concept: 'bg-gray-100 text-gray-600',
-  lab: 'bg-emerald-100 text-emerald-700',
-  quest: 'bg-amber-100 text-amber-700',
-  planner: 'bg-violet-100 text-violet-700',
+  concept: 'bg-canvas-soft-2 text-mute',
+  lab: 'bg-teal-50 text-teal-700',
+  quest: 'bg-amber-50 text-amber-700',
+  planner: 'bg-violet-50 text-violet-700',
 }
 
 /* ---------- 常用参考资料 ---------- */
@@ -94,10 +101,10 @@ export const tracks: Track[] = [
     subtitle: '5090 环境与显存账本',
     goal: '在动手写一行 RL 代码之前，先把这张卡摸清楚：工具链装对、显存算得出、推理跑得起来、评测基线量得到。这一阶段的产出是一个「已知能跑」的环境和一张写下起点分数的纸。',
     accent: {
-      text: 'text-orange-700',
-      bg: 'bg-orange-50',
-      border: 'border-orange-200',
-      dot: 'bg-orange-500',
+      text: 'text-amber-700',
+      bg: 'bg-amber-50',
+      border: 'border-amber-200',
+      dot: 'bg-amber-500',
     },
     lessons: [
       {
@@ -242,10 +249,10 @@ export const tracks: Track[] = [
     subtitle: 'RL 与后训练的心智模型',
     goal: '用最少的数学把 RL 讲通：为什么能对采样结果求梯度、reward 从哪来、PPO 在防什么、GRPO 又砍掉了什么。这一阶段不写训练代码，但每个概念都对应后面手写代码里的一行。',
     accent: {
-      text: 'text-sky-700',
-      bg: 'bg-sky-50',
-      border: 'border-sky-200',
-      dot: 'bg-sky-500',
+      text: 'text-blue-700',
+      bg: 'bg-blue-50',
+      border: 'border-blue-200',
+      dot: 'bg-blue-500',
     },
     lessons: [
       {
@@ -369,10 +376,10 @@ export const tracks: Track[] = [
     subtitle: '从零写一个能跑的 GRPO',
     goal: '不用任何 RL 框架，用 transformers + vLLM 手写完整训练循环。跑完这一阶段你会拥有一个约 200 行、你完全看得懂每一行的 RL 训练脚本，并在 5090 上把 Qwen3-0.6B 的 GSM8K 分数推上去。',
     accent: {
-      text: 'text-emerald-700',
-      bg: 'bg-emerald-50',
-      border: 'border-emerald-200',
-      dot: 'bg-emerald-500',
+      text: 'text-teal-700',
+      bg: 'bg-teal-50',
+      border: 'border-teal-200',
+      dot: 'bg-teal-500',
     },
     lessons: [
       {
@@ -648,10 +655,10 @@ export const tracks: Track[] = [
     subtitle: '评测、调参与排障',
     goal: '能跑通只是起点。这一阶段处理真正决定成败的部分：怎么评得可信、参数按什么顺序调、五种常见炸法怎么认怎么救，以及一次实验到底要花多久。',
     accent: {
-      text: 'text-rose-700',
-      bg: 'bg-rose-50',
-      border: 'border-rose-200',
-      dot: 'bg-rose-500',
+      text: 'text-pink-700',
+      bg: 'bg-pink-50',
+      border: 'border-pink-200',
+      dot: 'bg-pink-500',
     },
     lessons: [
       {

@@ -1,5 +1,5 @@
 import { Link, createFileRoute } from '@tanstack/react-router'
-import { KIND_STYLE, allLessons, lessonKey, type LessonKind } from '#/lib/curriculum'
+import { KIND_LABEL, KIND_STYLE, allLessons, lessonKey, type LessonKind } from '#/lib/curriculum'
 import { useProgress } from '#/lib/progress'
 
 export const Route = createFileRoute('/labs')({
@@ -29,12 +29,11 @@ function LabsPage() {
   const doneSet = new Set(progress.done)
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-14">
       <header>
-        <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
-          实验与<span className="text-brand-600">闯关</span>
-        </h1>
-        <p className="mt-2 max-w-3xl leading-relaxed text-gray-600">
+        <div className="eyebrow">动手环节</div>
+        <h1 className="mt-2.5 text-display-lg text-ink">实验与闯关。</h1>
+        <p className="mt-4 max-w-2xl leading-relaxed text-body">
           RL 是一门只能靠跑才能学会的手艺 —— 公式看懂了，第一次跑起来照样会 OOM、会不收敛。
           这里把全部动手环节汇总在一起，你可以脱离课程顺序直接来练。
         </p>
@@ -46,15 +45,15 @@ function LabsPage() {
 
         return (
           <section key={section.kind}>
-            <div className="flex flex-wrap items-center gap-3">
-              <span className={`rounded-md px-2 py-0.5 text-xs font-semibold ${KIND_STYLE[section.kind]}`}>
-                {items.length}
+            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b border-hairline pb-3">
+              <h2 className="text-display-sm text-ink">{section.title}</h2>
+              <span className={`rounded px-1.5 py-0.5 font-mono text-[11px] ${KIND_STYLE[section.kind]}`}>
+                {items.length} {KIND_LABEL[section.kind]}
               </span>
-              <h2 className="text-lg font-bold tracking-tight">{section.title}</h2>
-              <span className="text-sm text-gray-500">{section.desc}</span>
+              <span className="text-sm text-body">{section.desc}</span>
             </div>
 
-            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
               {items.map(({ track, lesson }) => {
                 const done = doneSet.has(lessonKey(track.id, lesson.id))
                 return (
@@ -62,32 +61,28 @@ function LabsPage() {
                     key={`${track.id}/${lesson.id}`}
                     to="/learn/$trackId/$lessonId"
                     params={{ trackId: track.id, lessonId: lesson.id }}
-                    className="group flex flex-col rounded-xl border border-gray-200 bg-white px-5 py-4 shadow-soft transition hover:-translate-y-0.5 hover:border-brand-500 hover:shadow-card"
+                    className="group flex flex-col rounded-lg border border-hairline bg-canvas px-5 py-4 shadow-soft transition hover:border-hairline-strong hover:shadow-card"
                   >
-                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span
-                        className={`rounded px-1.5 py-0.5 ${track.accent.bg} ${track.accent.text}`}
+                        className={`rounded px-1.5 py-0.5 font-mono text-[10px] ${track.accent.bg} ${track.accent.text}`}
                       >
                         {track.level} {track.title}
                       </span>
-                      <span className={`rounded px-1.5 py-0.5 ${KIND_STYLE[lesson.kind]}`}>
-                        {lesson.minutes} 分钟
-                      </span>
+                      <span className="font-mono text-[11px] text-mute">{lesson.minutes}m</span>
                       {done && (
-                        <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700">
+                        <span className="rounded-full bg-ink px-1.5 py-0.5 text-[10px] font-medium text-white">
                           已完成
                         </span>
                       )}
                       {lesson.status === 'planned' && (
-                        <span className="rounded bg-gray-100 px-1.5 py-0.5 text-gray-400">
+                        <span className="rounded bg-canvas-soft-2 px-1.5 py-0.5 text-[10px] text-mute">
                           仅大纲
                         </span>
                       )}
                     </div>
-                    <h3 className="mt-2 font-semibold text-gray-900 transition group-hover:text-brand-700">
-                      {lesson.title}
-                    </h3>
-                    <p className="mt-1 text-sm leading-relaxed text-gray-600">{lesson.summary}</p>
+                    <h3 className="mt-2.5 font-medium tracking-tight text-ink">{lesson.title}</h3>
+                    <p className="mt-1.5 text-sm leading-relaxed text-body">{lesson.summary}</p>
                   </Link>
                 )
               })}
