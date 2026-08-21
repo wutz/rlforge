@@ -7,30 +7,30 @@
 /*
  * 设计令牌，对齐 DESIGN.md（Vercel 语汇）：
  * 中性阶 + hairline 描边 + 叠层阴影 + 负字距的标题，色彩预算留给一个品牌色。
- * 唯一的偏离：primary 不用 ink #171717，而用靛蓝 —— 这是本站自己的身份。
+ * 唯一的偏离：primary 不用 ink #171717，而用紫色 —— 这是本站自己的身份。
  *
  * 命名与分档跟 storpath 一致（ink/body/mute、line、soft、shadow-card/soft/float、
  * .display-* / .eyebrow），三个站的样式代码可以直接互相搬。
  */
 @theme {
   /*
-   * 主题色靛蓝，色相 268°：与 storpath(30°)、netpath(203°) 各差 122° 与 65°，
+   * 主题色紫色，色相 302°：与 storpath(30°)、netpath(203°) 各差 88° 与 99°，
    * 三个站的主题色放在一起认得出谁是谁。
    *
-   * chroma 取 sRGB 色域上限的 80%。不贴到顶是因为靛蓝在 sRGB 里天花板很高
-   * （L=0.50 时能到 0.28），真顶上去是一块电光蓝，和这套克制的观感打架。
+   * chroma 取 sRGB 色域上限的 80%。不贴到顶是因为紫在 sRGB 里天花板同样很高
+   * （L≈0.56 时能到 0.29），真顶上去是一块荧光紫，和这套克制的观感打架。
    *
-   * brand-600 是按钮底色，白字对比度 4.82，别再往上提亮；
+   * brand-600 是按钮底色，白字对比度 5.18，别再往上提亮；
    * 它同时是 public/logo.svg 那块圆角方片的填充色 —— 三个站都遵守
    * 「logo 底色 == brand-600」（storpath #c54b3b、netpath #0b828a）。
    * 动这一档就要同步改 logo.svg。
    */
-  --color-brand-50: oklch(0.976 0.009 268);
-  --color-brand-100: oklch(0.945 0.021 268);
-  --color-brand-200: oklch(0.898 0.039 268);
-  --color-brand-500: oklch(0.63 0.158 268);
-  --color-brand-600: oklch(0.563 0.192 268); /* = #4668e4，白字 4.82:1 */
-  --color-brand-700: oklch(0.495 0.227 268); /* = #2e4ae0，hover 与文字用 */
+  --color-brand-50: oklch(0.976 0.011 302);
+  --color-brand-100: oklch(0.945 0.025 302);
+  --color-brand-200: oklch(0.898 0.047 302);
+  --color-brand-500: oklch(0.63 0.193 302);
+  --color-brand-600: oklch(0.563 0.235 302); /* = #923fe4，白字 5.18:1 */
+  --color-brand-700: oklch(0.495 0.209 302); /* = #7a32c1，hover 与文字用 */
 
   /* 中性阶：正文三档 + 描边两档 + 底色三档，别再往里加灰 */
   --color-ink: #171717;
