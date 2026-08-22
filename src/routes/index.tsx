@@ -99,7 +99,7 @@ function PathSummary({ path, doneSet }: { path: RolePath; doneSet: Set<string> }
       <div className="mt-5 flex items-center gap-3">
         <div className="h-1 flex-1 overflow-hidden rounded-full bg-soft-2">
           <div
-            className="h-full rounded-full bg-brand-600 transition-all"
+            className="h-full rounded-full bg-brand-500 transition-all"
             style={{ width: `${percent}%` }}
           />
         </div>
@@ -111,7 +111,7 @@ function PathSummary({ path, doneSet }: { path: RolePath; doneSet: Set<string> }
           to="/learn/$trackId/$lessonId"
           params={{ trackId: nextUp.track.id, lessonId: nextUp.lesson.id }}
           search={{ role: role.id }}
-          className="mt-5 inline-flex items-center rounded-sm bg-brand-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-brand-700"
+          className="mt-5 inline-flex items-center rounded-sm bg-brand-500 px-4 py-2.5 text-sm font-medium text-ink transition hover:bg-brand-600 hover:text-white"
         >
           {doneCount > 0 ? '继续这条路线' : '沿这条路线开始'} · 第 {nextUp.index} 节{' '}
           {nextUp.lesson.title}
@@ -240,7 +240,7 @@ function Marker({ done, children }: { done: boolean; children: ReactNode }) {
   return (
     <span
       className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full font-mono text-[10px] ${
-        done ? 'bg-brand-600 text-white' : 'bg-soft-2 text-mute'
+        done ? 'bg-brand-500 text-ink' : 'bg-soft-2 text-mute'
       }`}
     >
       {done ? '✓' : children}

@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 
 /** 表单控件基准：6px 圆角 + hairline 描边，聚焦时才亮出品牌色 */
 export const inputCls =
-  'w-full rounded-sm border border-line bg-canvas px-3 py-2 text-sm text-ink outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100'
+  'w-full rounded-sm border border-line bg-canvas px-3 py-2 text-sm text-ink outline-none transition focus:border-brand-600 focus:ring-2 focus:ring-brand-100'
 
 export function Field({
   label,

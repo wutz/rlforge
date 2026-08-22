@@ -71,7 +71,7 @@ function LabsPage() {
                         {lesson.minutes} 分钟
                       </span>
                       {done && (
-                        <span className="rounded-xs bg-brand-600 px-1.5 py-0.5 text-white">
+                        <span className="rounded-xs bg-brand-500 px-1.5 py-0.5 text-ink">
                           已完成
                         </span>
                       )}

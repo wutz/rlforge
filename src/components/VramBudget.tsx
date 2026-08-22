@@ -29,7 +29,7 @@ const DEFAULTS: VramInput = {
  * 主题色给主角「训练」，另两块借 info 与 plum 两个语义槽。
  */
 const GROUP_COLOR = {
-  train: 'bg-brand-600',
+  train: 'bg-brand-500',
   ref: 'bg-info',
   infer: 'bg-plum',
 } as const

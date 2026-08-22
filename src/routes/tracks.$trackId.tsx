@@ -69,7 +69,7 @@ function TrackPage() {
                 <div className="flex flex-wrap items-center gap-2">
                   <span
                     className={`flex h-5 w-5 items-center justify-center rounded-full font-mono text-[10px] ${
-                      done ? 'bg-brand-600 text-white' : 'bg-soft-2 text-mute'
+                      done ? 'bg-brand-500 text-ink' : 'bg-soft-2 text-mute'
                     }`}
                   >
                     {done ? '✓' : index + 1}
