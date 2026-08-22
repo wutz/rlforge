@@ -27,9 +27,10 @@
   底色三档 `canvas` / `soft` / `soft-2` —— 别再往里加灰
 - **语义色**：`info` / `warn` / `plum` / `danger`，各带 `-soft` 与 `-deep`；
   只出现在徽标和状态上，不做大面积铺底
-- **主题色**：靛蓝 268°，与 storpath(30°)、netpath(203°) 各差 122° / 65°。
-  `brand-600` 是按钮底色（白字 4.82:1，别再往上提亮），同时是 `public/logo.svg`
-  的填充色 —— 三个站共同的约定是「logo 底色 == brand-600」，改这一档必须同步改 logo
+- **主题色**：浅紫 302°，与 storpath(30°)、netpath(203°) 各差 88° / 99°。
+  `brand-500` 是浅紫块面（按钮底色、进度条、marker、logo 方块），只配 ink 深字；
+  `brand-600` 是可读紫（链接 / 聚焦 / 勾选 / 选中竖条，白底 5.31:1，别再往上提亮）。
+  logo 底色 == `brand-500`，改这一档必须同步改 `public/logo.svg`
 - **半径**：`xs` 4px / `sm` 6px 控件 / `md` 8px 卡片 / `lg` 12px 大卡片，按钮统一走 6px
 - **层次**：`shadow-hair` / `card` / `soft` / `float` 叠层阴影，内含 1px inset 描边 ——
   所以卡片不写 border，避免和 inset 环重影

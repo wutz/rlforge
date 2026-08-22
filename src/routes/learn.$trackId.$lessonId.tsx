@@ -157,7 +157,7 @@ function LessonPage() {
             className={`rounded-sm px-4 py-2.5 text-sm font-medium transition ${
               done
                 ? 'bg-soft-2 text-body shadow-hair hover:text-ink'
-                : 'bg-brand-600 text-white hover:bg-brand-700'
+                : 'bg-brand-500 text-ink hover:bg-brand-600 hover:text-white'
             }`}
           >
             {done ? '✓ 已标记完成（点击取消）' : '标记为已完成'}
@@ -304,7 +304,7 @@ function RoleBanner({
         </Link>
       </div>
       <div className="mt-2 h-1 overflow-hidden rounded-full bg-soft-2">
-        <div className="h-full rounded-full bg-brand-600" style={{ width: `${percent}%` }} />
+        <div className="h-full rounded-full bg-brand-500" style={{ width: `${percent}%` }} />
       </div>
     </div>
   )

@@ -28,7 +28,7 @@ export function TimeBudget() {
   /* 三段时间的颜色是有含义的（哪一段最费），配色沿用显存账本那三档 */
   const parts = [
     { label: '采样', seconds: result.genSeconds, color: 'bg-plum' },
-    { label: '训练', seconds: result.trainSeconds, color: 'bg-brand-600' },
+    { label: '训练', seconds: result.trainSeconds, color: 'bg-brand-500' },
     { label: '同步与切换', seconds: result.overheadSeconds, color: 'bg-line-strong' },
   ]
 

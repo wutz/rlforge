@@ -101,7 +101,7 @@ export function Quiz({
             type="button"
             onClick={submit}
             disabled={!picked.length}
-            className="mt-4 rounded-sm bg-brand-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-soft-2 disabled:text-mute"
+            className="mt-4 rounded-sm bg-brand-500 px-4 py-2.5 text-sm font-medium text-ink transition hover:bg-brand-600 hover:text-white disabled:cursor-not-allowed disabled:bg-soft-2 disabled:text-mute"
           >
             提交
           </button>
